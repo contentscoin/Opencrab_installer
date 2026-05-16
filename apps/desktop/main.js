@@ -1,4 +1,4 @@
-const { app, BrowserWindow, shell } = require('electron');
+const { app, BrowserWindow, dialog, shell } = require('electron');
 const { spawn } = require('child_process');
 const fs = require('fs');
 const net = require('net');
@@ -78,6 +78,10 @@ const WEB_PORT = 3000;
 const API_URL = `http://127.0.0.1:${API_PORT}`;
 const WEB_URL = `http://127.0.0.1:${WEB_PORT}`;
 const DATA_SERVICES = ['neo4j', 'mongodb', 'postgres', 'chromadb'];
+const SERVICE_MONITOR_INTERVAL_MS = 30000;
+const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const UPDATE_RELEASE_API_URL = 'https://api.github.com/repos/contentscoin/Opencrab_installer/releases/latest';
+const UPDATE_RELEASE_PAGE_URL = 'https://github.com/contentscoin/Opencrab_installer/releases/latest';
 const LOADING_HTML = `
 <!doctype html>
 <html lang="en">
@@ -134,8 +138,14 @@ const LOADING_HTML = `
 
 let mainWindow;
 const processes = [];
+const managedServices = new Map();
 let activeServiceEnv = null;
 let ensureLocalServicesPromise = null;
+let isQuitting = false;
+let serviceMonitorInterval = null;
+let serviceMonitorRunning = false;
+let updateCheckInterval = null;
+let lastNotifiedUpdateVersion = '';
 
 function getRootDir() {
   return getInitialRootDir();
@@ -239,7 +249,43 @@ function redactMcpUrl(url) {
   return url.replace(/(\/api\/mcp\/)[^/?#]+/, '$1<token>');
 }
 
-function spawnManaged(command, args, options, name) {
+function isManagedServiceRunning(serviceKey) {
+  const entry = managedServices.get(serviceKey);
+  return Boolean(entry?.proc && entry.proc.exitCode === null && !entry.proc.killed);
+}
+
+function scheduleManagedRestart(serviceKey, entry, code) {
+  if (isQuitting || !entry?.restart) {
+    return;
+  }
+
+  const uptimeMs = Date.now() - entry.startedAt;
+  const restartCount = uptimeMs < 15000 ? entry.restartCount + 1 : 0;
+  const delayMs = Math.min(60000, 3000 + restartCount * 5000);
+
+  managedServices.set(serviceKey, { ...entry, proc: null, restartCount });
+  log('Supervisor', `${entry.name} exited with code ${code}; restarting in ${Math.round(delayMs / 1000)}s`);
+
+  setTimeout(async () => {
+    if (isQuitting || isManagedServiceRunning(serviceKey)) {
+      return;
+    }
+
+    if (entry.shouldSkipRestart && await entry.shouldSkipRestart()) {
+      log('Supervisor', `${entry.name} restart skipped because service is already healthy`);
+      return;
+    }
+
+    spawnManaged(entry.command, entry.args, entry.options, entry.name, {
+      serviceKey,
+      restart: true,
+      restartCount,
+      shouldSkipRestart: entry.shouldSkipRestart,
+    });
+  }, delayMs);
+}
+
+function spawnManaged(command, args, options, name, lifecycle = {}) {
   log(name, `starting: ${command} ${args.join(' ')}`);
   const proc = spawn(command, args, {
     shell: false,
@@ -248,6 +294,21 @@ function spawnManaged(command, args, options, name) {
   });
 
   processes.push(proc);
+  const serviceKey = lifecycle.serviceKey || '';
+
+  if (serviceKey) {
+    managedServices.set(serviceKey, {
+      command,
+      args,
+      options,
+      name,
+      proc,
+      restart: lifecycle.restart === true,
+      restartCount: lifecycle.restartCount || 0,
+      shouldSkipRestart: lifecycle.shouldSkipRestart,
+      startedAt: Date.now(),
+    });
+  }
 
   proc.stdout.on('data', (data) => {
     const text = data.toString().trim();
@@ -261,6 +322,12 @@ function spawnManaged(command, args, options, name) {
 
   proc.on('close', (code) => {
     log(name, `exited with code ${code}`);
+    if (serviceKey) {
+      const entry = managedServices.get(serviceKey);
+      if (entry?.proc === proc) {
+        scheduleManagedRestart(serviceKey, entry, code);
+      }
+    }
   });
 
   return proc;
@@ -465,9 +532,19 @@ async function waitForHttp(url, name, timeoutMs = 120000) {
   throw new Error(`${name} did not become ready: ${lastError}`);
 }
 
+async function fetchWithTimeout(url, timeoutMs = 5000, options = {}) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function readApiStatus() {
   try {
-    const response = await fetch(`${API_URL}/api/status`);
+    const response = await fetchWithTimeout(`${API_URL}/api/status`, 5000);
     const text = await response.text();
     const data = text ? JSON.parse(text) : {};
     return {
@@ -487,6 +564,15 @@ async function readApiStatus() {
 async function isApiHealthy() {
   const status = await readApiStatus();
   return Boolean(status.ok && areStoresHealthy(status.data));
+}
+
+async function isWebHealthy() {
+  try {
+    const response = await fetchWithTimeout(`${WEB_URL}/dashboard`, 5000);
+    return response.ok;
+  } catch {
+    return false;
+  }
 }
 
 async function waitForExistingFastApi(timeoutMs = 15000) {
@@ -608,6 +694,17 @@ async function startFastApi(rootDir, env) {
     return;
   }
 
+  if (isManagedServiceRunning('fastapi')) {
+    log('FastAPI', 'process is already running; waiting for health');
+    await waitForJson(
+      `${API_URL}/api/status`,
+      (data) => data && data.ok === true && areStoresHealthy(data),
+      'FastAPI',
+      60000,
+    );
+    return;
+  }
+
   if (await waitForExistingFastApi()) {
     return;
   }
@@ -622,6 +719,11 @@ async function startFastApi(rootDir, env) {
     ['-m', 'uvicorn', 'apps.api.main:app', '--host', '127.0.0.1', '--port', String(API_PORT)],
     { cwd: rootDir, env },
     'FastAPI',
+    {
+      serviceKey: 'fastapi',
+      restart: true,
+      shouldSkipRestart: isApiHealthy,
+    },
   );
 
   await waitForJson(
@@ -662,6 +764,17 @@ async function ensureLocalServices() {
 }
 
 async function startNext(rootDir, env) {
+  if (await isWebHealthy()) {
+    log('Next.js', 'already healthy');
+    return;
+  }
+
+  if (isManagedServiceRunning('next')) {
+    log('Next.js', 'process is already running; waiting for health');
+    await waitForHttp(`${WEB_URL}/dashboard`, 'Next.js', 60000);
+    return;
+  }
+
   const webDir = path.join(rootDir, 'apps', 'web');
   if (app.isPackaged) {
     const nextBin = path.join(webDir, 'node_modules', 'next', 'dist', 'bin', 'next');
@@ -671,6 +784,11 @@ async function startNext(rootDir, env) {
       [nextBin, command, '--hostname', '127.0.0.1', '--port', String(WEB_PORT)],
       { cwd: webDir, env: { ...env, ELECTRON_RUN_AS_NODE: '1' } },
       'Next.js',
+      {
+        serviceKey: 'next',
+        restart: true,
+        shouldSkipRestart: isWebHealthy,
+      },
     );
   } else {
     spawnManaged(
@@ -678,6 +796,11 @@ async function startNext(rootDir, env) {
       ['run', 'dev', '--', '--hostname', '127.0.0.1', '--port', String(WEB_PORT)],
       { cwd: webDir, env, shell: true },
       'Next.js',
+      {
+        serviceKey: 'next',
+        restart: true,
+        shouldSkipRestart: isWebHealthy,
+      },
     );
   }
 
@@ -699,7 +822,10 @@ async function startNeo4jMcpServer(rootDir, env) {
     return;
   }
 
-  spawnManaged(command, [...commandParts, ...extraArgs], { cwd: rootDir, env }, 'Neo4j MCP');
+  spawnManaged(command, [...commandParts, ...extraArgs], { cwd: rootDir, env }, 'Neo4j MCP', {
+    serviceKey: 'neo4j-mcp',
+    restart: true,
+  });
 
   if (env.NEO4J_MCP_SERVER_HEALTH_URL) {
     await waitForHttp(env.NEO4J_MCP_SERVER_HEALTH_URL, 'Neo4j MCP', 60000);
@@ -826,6 +952,116 @@ async function startServices() {
   await checkMcpIntegration(serviceEnv);
   await runInitialIngest(rootDir, serviceEnv);
   await startNext(rootDir, serviceEnv);
+  startServiceMonitor();
+}
+
+function startServiceMonitor() {
+  if (serviceMonitorInterval) {
+    return;
+  }
+
+  serviceMonitorInterval = setInterval(async () => {
+    if (serviceMonitorRunning || isQuitting || !activeServiceEnv) {
+      return;
+    }
+
+    serviceMonitorRunning = true;
+    try {
+      const rootDir = getRootDir();
+      const status = await getLocalServicesStatus(activeServiceEnv);
+      if (!status.ok) {
+        log('Supervisor', 'local service health check failed; ensuring services are running');
+        await ensureLocalServices();
+      }
+
+      if (!(await isWebHealthy())) {
+        log('Supervisor', 'web UI health check failed; restarting Next.js');
+        await startNext(rootDir, activeServiceEnv);
+      }
+    } catch (error) {
+      log('Supervisor ERR', error && error.message ? error.message : String(error));
+    } finally {
+      serviceMonitorRunning = false;
+    }
+  }, SERVICE_MONITOR_INTERVAL_MS);
+}
+
+function compareVersions(left, right) {
+  const a = String(left || '').replace(/^v/i, '').split(/[.-]/).map((part) => Number.parseInt(part, 10) || 0);
+  const b = String(right || '').replace(/^v/i, '').split(/[.-]/).map((part) => Number.parseInt(part, 10) || 0);
+  const length = Math.max(a.length, b.length);
+  for (let index = 0; index < length; index += 1) {
+    const diff = (a[index] || 0) - (b[index] || 0);
+    if (diff !== 0) {
+      return diff;
+    }
+  }
+  return 0;
+}
+
+async function checkForUpdates(showNoUpdate = false) {
+  try {
+    const response = await fetchWithTimeout(UPDATE_RELEASE_API_URL, 10000, {
+      headers: {
+        Accept: 'application/vnd.github+json',
+        'User-Agent': `OpenCrab Desktop/${app.getVersion()}`,
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`GitHub release check failed: ${response.status} ${response.statusText}`);
+    }
+
+    const release = await response.json();
+    const latestVersion = String(release.tag_name || release.name || '').replace(/^v/i, '');
+    const currentVersion = app.getVersion();
+
+    if (latestVersion && compareVersions(latestVersion, currentVersion) > 0) {
+      if (lastNotifiedUpdateVersion === latestVersion) {
+        return;
+      }
+      lastNotifiedUpdateVersion = latestVersion;
+      log('Updater', `new release available: ${latestVersion}`);
+      const result = await dialog.showMessageBox(mainWindow || undefined, {
+        type: 'info',
+        buttons: ['Download', 'Later'],
+        defaultId: 0,
+        cancelId: 1,
+        title: 'OpenCrab update available',
+        message: `OpenCrab ${latestVersion} is available.`,
+        detail: `Current version: ${currentVersion}\nOpen the release page to download the latest installer.`,
+      });
+
+      if (result.response === 0) {
+        await shell.openExternal(release.html_url || UPDATE_RELEASE_PAGE_URL);
+      }
+    } else if (showNoUpdate) {
+      await dialog.showMessageBox(mainWindow || undefined, {
+        type: 'info',
+        title: 'OpenCrab is up to date',
+        message: `OpenCrab ${currentVersion} is the latest available version.`,
+      });
+    }
+  } catch (error) {
+    log('Updater ERR', error && error.message ? error.message : String(error));
+    if (showNoUpdate) {
+      await dialog.showMessageBox(mainWindow || undefined, {
+        type: 'warning',
+        title: 'Update check failed',
+        message: 'OpenCrab could not check for updates.',
+        detail: error && error.message ? error.message : String(error),
+      });
+    }
+  }
+}
+
+function startUpdateMonitor() {
+  if (updateCheckInterval) {
+    return;
+  }
+
+  setTimeout(() => checkForUpdates(false), 10000);
+  updateCheckInterval = setInterval(() => checkForUpdates(false), UPDATE_CHECK_INTERVAL_MS);
 }
 
 function createWindow() {
@@ -885,6 +1121,7 @@ app.on('ready', async () => {
   try {
     await startServices();
     loadDashboard();
+    startUpdateMonitor();
   } catch (error) {
     console.error('Failed to start OpenCrab Desktop:', error);
     showStartupError(error);
@@ -898,6 +1135,13 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', () => {
+  isQuitting = true;
+  if (serviceMonitorInterval) {
+    clearInterval(serviceMonitorInterval);
+  }
+  if (updateCheckInterval) {
+    clearInterval(updateCheckInterval);
+  }
   log('Shutdown', 'cleaning up child processes');
   for (const proc of processes) {
     if (proc.pid) {

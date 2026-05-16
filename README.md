@@ -25,6 +25,8 @@ Added desktop pieces:
 - Codex skill/plugin asset generation for OpenCrab MCP usage
 - Initial seed/ingest bootstrap for local graph data
 - Loading/error screen so startup progress is visible instead of a blank window
+- Runtime supervisor that restarts local services if FastAPI, Next.js, or optional MCP helpers stop
+- GitHub Release update notification prompt for newer installer versions
 
 ## Download
 
@@ -139,6 +141,12 @@ apps\desktop\dist\win-unpacked\OpenCrab.exe
 - Starts Neo4j, MongoDB, PostgreSQL, ChromaDB, FastAPI, and Next.js from the desktop shell.
 - Uses `next start` for packaged production UI.
 - Shows startup progress while local services warm up.
+
+### v1.0.1
+
+- Adds a desktop supervisor that restarts FastAPI, Next.js, and an optional Neo4j MCP process if they exit unexpectedly.
+- Adds a periodic local health monitor that re-runs the Docker/data-service startup path if containers or API health checks fail.
+- Adds GitHub Release update checks and a desktop prompt when a newer installer is available.
 
 ## Attribution
 
