@@ -13,8 +13,18 @@ permissions:
 
 jobs:
   build-mac:
-    name: Build macOS Intel and Apple Silicon DMG/ZIP
-    runs-on: macos-13
+    name: Build macOS ${{ matrix.label }} DMG/ZIP
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Intel
+            runner: macos-15-intel
+            arch: x64
+          - label: Apple Silicon
+            runner: macos-15
+            arch: arm64
 
     steps:
       - name: Check out repository
@@ -52,8 +62,8 @@ jobs:
         run: npm run build
         working-directory: apps/web
 
-      - name: Build macOS installers
-        run: npx electron-builder --mac dmg zip --x64 --arm64 -p never
+      - name: Build macOS installer
+        run: npx electron-builder --mac dmg zip --${{ matrix.arch }} -p never
         working-directory: apps/desktop
 
       - name: Verify release exists
