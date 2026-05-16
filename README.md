@@ -34,17 +34,19 @@ Installers are published on the GitHub Releases page:
 
 [Download the latest release](https://github.com/contentscoin/Opencrab_installer/releases/latest)
 
-Current Windows asset:
+Current release assets:
 
-- `OpenCrab Setup 1.0.0.exe`
+- Windows: `OpenCrab Setup <version>.exe`
+- macOS: `.dmg` and `.zip` assets for Intel and Apple Silicon, built by GitHub Actions on a macOS runner.
 
 ## Prerequisites
 
-The Windows installer is designed to set up the local service stack, but Docker Desktop is still the runtime used for Neo4j and the other data stores.
+The Windows installer is designed to set up the local service stack, but Docker Desktop is still the runtime used for Neo4j and the other data stores. macOS builds also use Docker Desktop for the local graph/data-service stack.
 
 Expected runtime:
 
 - Windows 10/11
+- macOS 13+ for macOS installs
 - Docker Desktop
 - Internet access for the first bootstrap
 - Available local ports:
@@ -57,11 +59,11 @@ Expected runtime:
   - `5433` for PostgreSQL
   - `8002` for ChromaDB
 
-If Docker Desktop is missing, the installer bootstrap attempts to install/start it through `winget` where available. Some Windows machines still require Docker Desktop first-run approval or a restart.
+If Docker Desktop is missing on Windows, the installer bootstrap attempts to install/start it through `winget` where available. Some Windows machines still require Docker Desktop first-run approval or a restart. On macOS, install and start Docker Desktop manually before launching OpenCrab.
 
 ## How To Use
 
-1. Download `OpenCrab Setup 1.0.0.exe` from Releases.
+1. Download the Windows `.exe` or macOS `.dmg` from Releases.
 2. Run the installer and wait until it fully completes. The bundled Python environment and web dependencies make first install noticeably large.
 3. Launch OpenCrab from the Start Menu or desktop shortcut.
 4. Wait for the startup screen to finish. The app starts Docker services, FastAPI, and the web UI.
@@ -124,6 +126,12 @@ Build the Windows installer:
 npm --prefix apps\desktop run dist:win
 ```
 
+Build the macOS installer:
+
+```bash
+npm --prefix apps/desktop run dist:mac
+```
+
 Run the unpacked desktop app after packaging:
 
 ```powershell
@@ -147,6 +155,12 @@ apps\desktop\dist\win-unpacked\OpenCrab.exe
 - Adds a desktop supervisor that restarts FastAPI, Next.js, and an optional Neo4j MCP process if they exit unexpectedly.
 - Adds a periodic local health monitor that re-runs the Docker/data-service startup path if containers or API health checks fail.
 - Adds GitHub Release update checks and a desktop prompt when a newer installer is available.
+
+### v1.0.2
+
+- Adds macOS runtime support for the bundled Python virtual environment path.
+- Adds macOS Electron Builder targets for DMG and ZIP outputs.
+- Adds a GitHub Actions workflow that builds Intel and Apple Silicon macOS release assets on a macOS runner and uploads them to a release tag.
 
 ## Attribution
 

@@ -1,0 +1,72 @@
+name: Build macOS installer
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to upload macOS assets to"
+        required: true
+        default: "v1.0.2"
+
+permissions:
+  contents: write
+
+jobs:
+  build-mac:
+    name: Build macOS Intel and Apple Silicon DMG/ZIP
+    runs-on: macos-13
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: |
+            apps/web/package-lock.json
+            apps/desktop/package-lock.json
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python runtime
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip setuptools wheel
+          .venv/bin/python -m pip install -e .
+
+      - name: Install web dependencies
+        run: npm ci
+        working-directory: apps/web
+
+      - name: Install desktop dependencies
+        run: npm ci
+        working-directory: apps/desktop
+
+      - name: Build web app
+        run: npm run build
+        working-directory: apps/web
+
+      - name: Build macOS installers
+        run: npx electron-builder --mac dmg zip --x64 --arm64 -p never
+        working-directory: apps/desktop
+
+      - name: Verify release exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release view "${{ inputs.tag }}" --repo "${{ github.repository }}"
+
+      - name: Upload macOS assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ inputs.tag }}" \
+            apps/desktop/dist/*.dmg \
+            apps/desktop/dist/*.zip \
+            --repo "${{ github.repository }}" \
+            --clobber

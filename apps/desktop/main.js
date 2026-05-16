@@ -152,6 +152,9 @@ function getRootDir() {
 }
 
 function getPythonPath(rootDir) {
+  if (process.platform !== 'win32') {
+    return path.join(rootDir, '.venv', 'bin', 'python');
+  }
   return path.join(rootDir, '.venv', 'Scripts', 'python.exe');
 }
 

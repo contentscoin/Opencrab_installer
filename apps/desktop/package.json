@@ -1,6 +1,6 @@
 {
   "name": "opencrab-desktop",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "OpenCrab Desktop Application",
   "author": "OpenCrab",
   "main": "main.js",
@@ -8,9 +8,11 @@
     "start": "electron .",
     "build:web": "npm --prefix ../web run build",
     "predist:win": "npm run build:web",
+    "predist:mac": "npm run build:web",
     "prepack": "npm run build:web",
     "pack": "electron-builder --dir -p never",
     "dist:win": "electron-builder --win nsis -p never",
+    "dist:mac": "electron-builder --mac dmg zip -p never",
     "build": "npm run dist:win"
   },
   "build": {
@@ -20,6 +22,10 @@
     "win": {
       "target": "nsis",
       "icon": "../../logo.png"
+    },
+    "mac": {
+      "target": ["dmg", "zip"],
+      "category": "public.app-category.developer-tools"
     },
     "nsis": {
       "oneClick": false,
