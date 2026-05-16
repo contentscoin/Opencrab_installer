@@ -210,6 +210,12 @@ class Neo4jStore:
             result = session.run(cypher, **(params or {}))
             return [dict(record) for record in result]
 
+    def run_query(
+        self, cypher: str, params: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
+        """Backward-compatible alias for generic Cypher reads."""
+        return self.run_cypher(cypher, params)
+
     def find_neighbors(
         self,
         node_id: str,

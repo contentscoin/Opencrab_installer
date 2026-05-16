@@ -2,7 +2,7 @@ import type { Metadata } from 'next'
 import './globals.css'
 
 export const metadata: Metadata = {
-  title: 'OpenCrab — MetaOntology OS',
+  title: 'OpenCrab MetaOntology OS',
   description: 'Build, query, and visualize your knowledge ontology',
 }
 

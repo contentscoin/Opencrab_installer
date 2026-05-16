@@ -5,8 +5,8 @@ services:
     image: neo4j:5
     container_name: opencrab-neo4j
     ports:
-      - "7474:7474"   # HTTP browser
-      - "7687:7687"   # Bolt protocol
+      - "${NEO4J_HTTP_HOST_PORT:-7474}:7474"   # HTTP browser
+      - "${NEO4J_BOLT_HOST_PORT:-7687}:7687"   # Bolt protocol
     environment:
       NEO4J_AUTH: neo4j/opencrab
       NEO4J_PLUGINS: '["apoc"]'
@@ -32,7 +32,7 @@ services:
     image: mongo:7
     container_name: opencrab-mongodb
     ports:
-      - "27017:27017"
+      - "${MONGODB_HOST_PORT:-27017}:27017"
     environment:
       MONGO_INITDB_ROOT_USERNAME: root
       MONGO_INITDB_ROOT_PASSWORD: opencrab
@@ -51,7 +51,7 @@ services:
     image: postgres:16
     container_name: opencrab-postgres
     ports:
-      - "5432:5432"
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
     environment:
       POSTGRES_USER: opencrab
       POSTGRES_PASSWORD: opencrab
@@ -70,7 +70,7 @@ services:
     image: chromadb/chroma:latest
     container_name: opencrab-chromadb
     ports:
-      - "8000:8000"
+      - "${CHROMA_HOST_PORT:-8000}:8000"
     environment:
       CHROMA_SERVER_HOST: 0.0.0.0
       CHROMA_SERVER_HTTP_PORT: 8000

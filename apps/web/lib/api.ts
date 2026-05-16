@@ -1,8 +1,9 @@
-const BASE = process.env.NEXT_PUBLIC_API_URL || 'https://opencrabback.up.railway.app'
+const BASE = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8080'
+const DESKTOP_BASE = process.env.NEXT_PUBLIC_DESKTOP_CONTROL_URL || 'http://127.0.0.1:18273'
 
 function headers(apiKey?: string) {
   const h: Record<string, string> = { 'Content-Type': 'application/json' }
-  if (apiKey) h['Authorization'] = `Bearer ${apiKey}`
+  if (apiKey) h.Authorization = `Bearer ${apiKey}`
   return h
 }
 
@@ -31,14 +32,50 @@ export interface QueryResult {
 
 export type SourceType = 'obsidian' | 'notion' | 'gdrive' | 'github'
 
-/* ── Status ──────────────────────────────────────────────── */
+export interface DesktopStatus {
+  ok: boolean
+  mcpUrlConfigured: boolean
+  mcpUrl: string
+  oauthPending?: boolean
+}
+
+export interface AgentAssetResult {
+  label: string
+  path?: string
+  status?: string
+}
+
+export interface LocalServicesStatus {
+  ok: boolean
+  api?: {
+    ok: boolean
+    status: number
+    stores?: Record<string, unknown>
+    error?: string
+  }
+  containers?: Record<string, {
+    name: string
+    running: boolean
+    healthy: boolean
+    status: string
+    error?: string
+  }>
+  neo4j?: {
+    browserUrl: string
+    boltUrl: string
+    username: string
+  }
+}
+
 export async function getStatus(): Promise<{ ok: boolean; version?: string; vectorCount?: number }> {
   try {
     const r = await fetch(`${BASE}/api/status`, { cache: 'no-store' })
     if (!r.ok) return { ok: false }
     const d = await r.json()
     return { ok: true, version: d.version }
-  } catch { return { ok: false } }
+  } catch {
+    return { ok: false }
+  }
 }
 
 export async function getDetailedStatus(apiKey: string): Promise<Record<string, unknown>> {
@@ -46,10 +83,11 @@ export async function getDetailedStatus(apiKey: string): Promise<Record<string, 
     const r = await fetch(`${BASE}/status`, { headers: headers(apiKey), cache: 'no-store' })
     if (!r.ok) return {}
     return r.json()
-  } catch { return {} }
+  } catch {
+    return {}
+  }
 }
 
-/* ── Query ───────────────────────────────────────────────── */
 export async function query(apiKey: string, question: string, topK = 5) {
   const r = await fetch(`${BASE}/api/query`, {
     method: 'POST',
@@ -63,7 +101,6 @@ export async function query(apiKey: string, question: string, topK = 5) {
   return r.json()
 }
 
-/* ── Ingest (external sources) ───────────────────────────── */
 export async function ingestSource(
   apiKey: string,
   sourceType: SourceType,
@@ -73,7 +110,7 @@ export async function ingestSource(
     sourceUrl?: string
     query?: string
     maxItems?: number
-  } = {}
+  } = {},
 ) {
   const r = await fetch(`${BASE}/api/ingest`, {
     method: 'POST',
@@ -94,14 +131,37 @@ export async function ingestSource(
   return r.json()
 }
 
-/* ── Graph nodes/edges (new API — available after redeploy) ─ */
+export async function startLocalServices(): Promise<LocalServicesStatus> {
+  const r = await fetch(`${DESKTOP_BASE}/desktop/services/start`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason: 'ingest' }),
+  })
+  const data = await r.json().catch(() => ({}))
+  if (!r.ok || data.ok === false || data.status?.ok === false) {
+    throw new Error(data.error || 'Failed to start local Neo4j services')
+  }
+  return data.status
+}
+
+export async function getLocalServicesStatus(): Promise<LocalServicesStatus> {
+  const r = await fetch(`${DESKTOP_BASE}/desktop/services/status`, { cache: 'no-store' })
+  const data = await r.json().catch(() => ({}))
+  if (!r.ok || data.ok === false) {
+    throw new Error(data.error || 'Failed to read local service status')
+  }
+  return data.status
+}
+
 export async function getNodes(apiKey: string): Promise<OcNode[]> {
   try {
     const r = await fetch(`${BASE}/api/nodes`, { headers: headers(apiKey), cache: 'no-store' })
     if (!r.ok) return []
     const d = await r.json()
     return d.nodes ?? []
-  } catch { return [] }
+  } catch {
+    return []
+  }
 }
 
 export async function getEdges(apiKey: string): Promise<OcEdge[]> {
@@ -110,5 +170,56 @@ export async function getEdges(apiKey: string): Promise<OcEdge[]> {
     if (!r.ok) return []
     const d = await r.json()
     return d.edges ?? []
-  } catch { return [] }
+  } catch {
+    return []
+  }
+}
+
+export async function getDesktopStatus(): Promise<DesktopStatus> {
+  try {
+    const r = await fetch(`${DESKTOP_BASE}/desktop/status`, { cache: 'no-store' })
+    if (!r.ok) return { ok: false, mcpUrlConfigured: false, mcpUrl: '' }
+    return r.json()
+  } catch {
+    return { ok: false, mcpUrlConfigured: false, mcpUrl: '' }
+  }
+}
+
+export async function saveDesktopMcpUrl(url: string, apiKey = ''): Promise<{ mcpUrl: string; tools: number }> {
+  const r = await fetch(`${DESKTOP_BASE}/desktop/mcp-url`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url, apiKey }),
+  })
+  const data = await r.json().catch(() => ({}))
+  if (!r.ok || data.ok === false) {
+    throw new Error(data.error || 'Failed to save MCP URL')
+  }
+  return { mcpUrl: data.mcpUrl, tools: data.tools }
+}
+
+export async function startDesktopOAuth(): Promise<{ authUrl: string }> {
+  const r = await fetch(`${DESKTOP_BASE}/desktop/oauth/start`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  })
+  const data = await r.json().catch(() => ({}))
+  if (!r.ok || data.ok === false) {
+    throw new Error(data.error || 'Failed to start OAuth')
+  }
+  return { authUrl: data.authUrl }
+}
+
+export async function installAgentAssets(target: string): Promise<AgentAssetResult[]> {
+  const r = await fetch(`${DESKTOP_BASE}/desktop/agent-assets/install`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ target }),
+  })
+  const data = await r.json().catch(() => ({}))
+  if (!r.ok || data.ok === false) {
+    throw new Error(data.error || 'Failed to install agent assets')
+  }
+  return data.results ?? []
 }

@@ -4,20 +4,26 @@ import { useState } from 'react'
 import type { OcNode } from '../lib/api'
 
 const PARA_FOLDERS = [
-  { key: '00_Inbox',     label: '00_Inbox',     icon: '📥' },
-  { key: '01_Projects',  label: '01_Projects',  icon: '📁' },
-  { key: '02_Areas',     label: '02_Areas',     icon: '📁' },
-  { key: '03_Resources', label: '03_Resources', icon: '📁' },
-  { key: '04_Outputs',   label: '04_Outputs',   icon: '📁' },
-  { key: '05_System',    label: '05_System',    icon: '⚙️' },
-  { key: 'Daily Notes',  label: 'Daily Notes',  icon: '📅' },
-  { key: '99_Archive',   label: '99_Archive',   icon: '🗄️' },
+  { key: '00_Inbox', label: '00_Inbox', icon: 'IN' },
+  { key: '01_Projects', label: '01_Projects', icon: 'PR' },
+  { key: '02_Areas', label: '02_Areas', icon: 'AR' },
+  { key: '03_Resources', label: '03_Resources', icon: 'RS' },
+  { key: '04_Outputs', label: '04_Outputs', icon: 'OU' },
+  { key: '05_System', label: '05_System', icon: 'SY' },
+  { key: 'Daily Notes', label: 'Daily Notes', icon: 'DN' },
+  { key: '99_Archive', label: '99_Archive', icon: 'AZ' },
 ]
 
 const SPACE_DOT: Record<string, string> = {
-  subject: '#f8c537', resource: '#83a598', concept: '#b8bb26',
-  evidence: '#bdae93', outcome: '#fb4934', lever: '#d3869b',
-  policy: '#fabd2f', claim: '#fe8019', community: '#8ec07c',
+  subject: '#f8c537',
+  resource: '#83a598',
+  concept: '#b8bb26',
+  evidence: '#bdae93',
+  outcome: '#fb4934',
+  lever: '#d3869b',
+  policy: '#fabd2f',
+  claim: '#fe8019',
+  community: '#8ec07c',
 }
 
 interface Props {
@@ -31,130 +37,165 @@ interface Props {
 }
 
 export default function FileExplorer({
-  nodes, selectedId, onNodeSelect, onIngestClick, connected, apiKey, onApiKeyChange,
+  nodes,
+  selectedId,
+  onNodeSelect,
+  onIngestClick,
+  connected,
+  apiKey,
+  onApiKeyChange,
 }: Props) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({ '03_Resources': true })
   const [showKey, setShowKey] = useState(false)
 
-  // Group nodes into folders by source_id prefix or space
   function nodesForFolder(folderKey: string): OcNode[] {
-    return nodes.filter(n => {
-      const src = (n.properties?.source_id as string) || (n.properties?.folder as string) || ''
-      return src.includes(folderKey) || n.space === folderKey.toLowerCase().replace(/\d+_/, '')
+    return nodes.filter((node) => {
+      const source = (node.properties?.source_id as string) || (node.properties?.folder as string) || ''
+      return source.includes(folderKey) || node.space === folderKey.toLowerCase().replace(/\d+_/, '')
     })
   }
 
-  // All nodes not matching any folder → root level by space
   const spaceGroups: Record<string, OcNode[]> = {}
-  nodes.forEach(n => {
-    if (!spaceGroups[n.space]) spaceGroups[n.space] = []
-    spaceGroups[n.space].push(n)
+  nodes.forEach((node) => {
+    if (!spaceGroups[node.space]) spaceGroups[node.space] = []
+    spaceGroups[node.space].push(node)
   })
 
   function toggle(key: string) {
-    setExpanded(p => ({ ...p, [key]: !p[key] }))
+    setExpanded((previous) => ({ ...previous, [key]: !previous[key] }))
   }
 
   return (
-    <div style={{
-      width: 260, minWidth: 260, background: '#1a1a1a',
-      borderRight: '1px solid rgba(248,197,55,0.15)',
-      display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden',
-    }}>
-      {/* Header */}
+    <div
+      style={{
+        width: 260,
+        minWidth: 260,
+        background: '#1a1a1a',
+        borderRight: '1px solid rgba(248,197,55,0.15)',
+        display: 'flex',
+        flexDirection: 'column',
+        height: '100%',
+        overflow: 'hidden',
+      }}
+    >
       <div style={{ padding: '12px 14px 8px', borderBottom: '1px solid rgba(248,197,55,0.15)' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
           <span style={{ color: '#f8c537', fontWeight: 700, fontSize: 13, letterSpacing: '0.05em' }}>
             OPENCRAB
           </span>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <div style={{
-              width: 7, height: 7, borderRadius: '50%',
-              background: connected ? '#8ec07c' : '#fb4934',
-              boxShadow: connected ? '0 0 6px #8ec07c' : 'none',
-            }} />
+            <div
+              style={{
+                width: 7,
+                height: 7,
+                borderRadius: '50%',
+                background: connected ? '#8ec07c' : '#fb4934',
+                boxShadow: connected ? '0 0 6px #8ec07c' : 'none',
+              }}
+            />
             <span style={{ fontSize: 10, color: '#7c6f64' }}>{connected ? 'connected' : 'offline'}</span>
           </div>
         </div>
-        {/* API Key */}
+
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span style={{ fontSize: 12, color: '#7c6f64' }}>🔑</span>
+          <span style={{ fontSize: 12, color: '#7c6f64' }}>Key</span>
           <input
             type={showKey ? 'text' : 'password'}
             className="input-dark mono"
             value={apiKey}
-            onChange={e => onApiKeyChange(e.target.value)}
-            placeholder="API Key…"
+            onChange={(event) => onApiKeyChange(event.target.value)}
+            placeholder="API key"
             style={{ fontSize: 11, padding: '4px 8px' }}
           />
           <button
-            onClick={() => setShowKey(p => !p)}
-            style={{ background: 'none', border: 'none', color: '#7c6f64', cursor: 'pointer', fontSize: 12, padding: '0 2px' }}
+            onClick={() => setShowKey((previous) => !previous)}
+            style={{
+              background: 'none',
+              border: 'none',
+              color: '#7c6f64',
+              cursor: 'pointer',
+              fontSize: 12,
+              padding: '0 2px',
+            }}
           >
-            {showKey ? '🙈' : '👁'}
+            {showKey ? 'hide' : 'show'}
           </button>
         </div>
       </div>
 
-      {/* Ingest button */}
       <div style={{ padding: '8px 14px', borderBottom: '1px solid rgba(248,197,55,0.12)' }}>
         <button className="btn-gold" style={{ width: '100%', fontSize: 12 }} onClick={onIngestClick}>
-          + 인제스트
+          + Ingest
         </button>
       </div>
 
-      {/* File tree */}
       <div style={{ flex: 1, overflowY: 'auto', padding: '6px 0' }}>
-        {/* PARA folders */}
-        {PARA_FOLDERS.map(f => {
-          const folderNodes = nodesForFolder(f.key)
-          const isExpanded = expanded[f.key]
+        {PARA_FOLDERS.map((folder) => {
+          const folderNodes = nodesForFolder(folder.key)
+          const isExpanded = expanded[folder.key]
           return (
-            <div key={f.key}>
+            <div key={folder.key}>
               <div
-                onClick={() => toggle(f.key)}
+                onClick={() => toggle(folder.key)}
                 style={{
-                  display: 'flex', alignItems: 'center', gap: 6,
-                  padding: '4px 14px', cursor: 'pointer',
-                  color: '#bdae93', fontSize: 12,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  padding: '4px 14px',
+                  cursor: 'pointer',
+                  color: '#bdae93',
+                  fontSize: 12,
                   userSelect: 'none',
                 }}
-                onMouseEnter={e => (e.currentTarget.style.background = '#252525')}
-                onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+                onMouseEnter={(event) => (event.currentTarget.style.background = '#252525')}
+                onMouseLeave={(event) => (event.currentTarget.style.background = 'transparent')}
               >
-                <span style={{ fontSize: 10, color: '#555', width: 10 }}>
-                  {isExpanded ? '▼' : '▶'}
-                </span>
-                <span style={{ fontSize: 13 }}>{f.icon}</span>
-                <span style={{ flex: 1 }}>{f.label}</span>
+                <span style={{ fontSize: 10, color: '#555', width: 10 }}>{isExpanded ? 'v' : '>'}</span>
+                <span style={{ fontSize: 10, color: '#7c6f64', width: 18 }}>{folder.icon}</span>
+                <span style={{ flex: 1 }}>{folder.label}</span>
                 {folderNodes.length > 0 && (
-                  <span className="badge" style={{ fontSize: 10 }}>{folderNodes.length}</span>
+                  <span className="badge" style={{ fontSize: 10 }}>
+                    {folderNodes.length}
+                  </span>
                 )}
               </div>
               {isExpanded && (
                 <div>
                   {folderNodes.length === 0 ? (
-                    <div style={{ padding: '2px 14px 2px 36px', fontSize: 11, color: '#555' }}>비어있음</div>
+                    <div style={{ padding: '2px 14px 2px 36px', fontSize: 11, color: '#555' }}>Empty</div>
                   ) : (
-                    folderNodes.map(n => (
+                    folderNodes.map((node) => (
                       <div
-                        key={n.id}
-                        onClick={() => onNodeSelect(n.id)}
+                        key={node.id}
+                        onClick={() => onNodeSelect(node.id)}
                         style={{
-                          display: 'flex', alignItems: 'center', gap: 6,
-                          padding: '3px 14px 3px 36px', cursor: 'pointer',
-                          background: selectedId === n.id ? 'rgba(248,197,55,0.1)' : 'transparent',
-                          fontSize: 11, color: selectedId === n.id ? '#f8c537' : '#bdae93',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 6,
+                          padding: '3px 14px 3px 36px',
+                          cursor: 'pointer',
+                          background: selectedId === node.id ? 'rgba(248,197,55,0.1)' : 'transparent',
+                          fontSize: 11,
+                          color: selectedId === node.id ? '#f8c537' : '#bdae93',
                         }}
-                        onMouseEnter={e => { if (selectedId !== n.id) e.currentTarget.style.background = '#252525' }}
-                        onMouseLeave={e => { if (selectedId !== n.id) e.currentTarget.style.background = 'transparent' }}
+                        onMouseEnter={(event) => {
+                          if (selectedId !== node.id) event.currentTarget.style.background = '#252525'
+                        }}
+                        onMouseLeave={(event) => {
+                          if (selectedId !== node.id) event.currentTarget.style.background = 'transparent'
+                        }}
                       >
-                        <div style={{
-                          width: 6, height: 6, borderRadius: '50%',
-                          background: SPACE_DOT[n.space] ?? '#666', flexShrink: 0,
-                        }} />
+                        <div
+                          style={{
+                            width: 6,
+                            height: 6,
+                            borderRadius: '50%',
+                            background: SPACE_DOT[node.space] ?? '#666',
+                            flexShrink: 0,
+                          }}
+                        />
                         <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          {n.id}
+                          {node.id}
                         </span>
                       </div>
                     ))
@@ -165,43 +206,59 @@ export default function FileExplorer({
           )
         })}
 
-        {/* Space groups for unmatched nodes */}
         <div style={{ margin: '8px 14px 4px', borderTop: '1px solid rgba(248,197,55,0.1)', paddingTop: 8 }}>
           <div style={{ fontSize: 10, color: '#555', letterSpacing: '0.08em', marginBottom: 4 }}>ALL SPACES</div>
         </div>
-        {Object.entries(spaceGroups).map(([space, snodes]) => (
+        {Object.entries(spaceGroups).map(([space, spaceNodes]) => (
           <div key={space}>
             <div
               onClick={() => toggle(`space_${space}`)}
               style={{
-                display: 'flex', alignItems: 'center', gap: 6,
-                padding: '3px 14px', cursor: 'pointer',
-                color: '#bdae93', fontSize: 11, userSelect: 'none',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                padding: '3px 14px',
+                cursor: 'pointer',
+                color: '#bdae93',
+                fontSize: 11,
+                userSelect: 'none',
               }}
-              onMouseEnter={e => (e.currentTarget.style.background = '#252525')}
-              onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+              onMouseEnter={(event) => (event.currentTarget.style.background = '#252525')}
+              onMouseLeave={(event) => (event.currentTarget.style.background = 'transparent')}
             >
-              <div style={{
-                width: 7, height: 7, borderRadius: '50%',
-                background: SPACE_DOT[space] ?? '#666', flexShrink: 0,
-              }} />
-              <span style={{ flex: 1, color: SPACE_DOT[space] ?? '#bdae93' }}>{space}</span>
-              <span className="badge" style={{ fontSize: 10 }}>{snodes.length}</span>
-            </div>
-            {expanded[`space_${space}`] && snodes.map(n => (
               <div
-                key={n.id}
-                onClick={() => onNodeSelect(n.id)}
                 style={{
-                  padding: '2px 14px 2px 32px', cursor: 'pointer', fontSize: 10,
-                  color: selectedId === n.id ? '#f8c537' : '#7c6f64',
-                  background: selectedId === n.id ? 'rgba(248,197,55,0.08)' : 'transparent',
-                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                  width: 7,
+                  height: 7,
+                  borderRadius: '50%',
+                  background: SPACE_DOT[space] ?? '#666',
+                  flexShrink: 0,
                 }}
-              >
-                {n.id}
-              </div>
-            ))}
+              />
+              <span style={{ flex: 1, color: SPACE_DOT[space] ?? '#bdae93' }}>{space}</span>
+              <span className="badge" style={{ fontSize: 10 }}>
+                {spaceNodes.length}
+              </span>
+            </div>
+            {expanded[`space_${space}`] &&
+              spaceNodes.map((node) => (
+                <div
+                  key={node.id}
+                  onClick={() => onNodeSelect(node.id)}
+                  style={{
+                    padding: '2px 14px 2px 32px',
+                    cursor: 'pointer',
+                    fontSize: 10,
+                    color: selectedId === node.id ? '#f8c537' : '#7c6f64',
+                    background: selectedId === node.id ? 'rgba(248,197,55,0.08)' : 'transparent',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {node.id}
+                </div>
+              ))}
           </div>
         ))}
       </div>

@@ -40,7 +40,7 @@ NODES: list[tuple[str, str, str, dict]] = [
 
     # Resources
     ("resource", "Project",  "proj-analytics", {"name": "Analytics Platform", "status": "active"}),
-    ("resource", "Document", "doc-spec",        {"name": "Platform Spec",      "version": "2.1"}),
+    ("resource", "Document", "doc-spec",        {"name": "Platform Spec",      "title": "Platform Spec", "version": "2.1", "format": "markdown"}),
     ("resource", "Dataset",  "ds-events",       {"name": "User Events Dataset","rows": 1000000}),
     ("resource", "Tool",     "tool-dbt",        {"name": "dbt",                "version": "1.7"}),
     ("resource", "API",      "api-query",       {"name": "Query API",          "endpoint": "/v2/query"}),
@@ -51,7 +51,7 @@ NODES: list[tuple[str, str, str, dict]] = [
     ("evidence", "Evidence",  "ev-001",   {"summary": "Error rate increased 40% in January 2026", "confidence": 0.92}),
 
     # Concepts
-    ("concept", "Entity",  "ent-user-behaviour", {"name": "User Behaviour",    "domain": "analytics"}),
+    ("concept", "Entity",  "ent-user-behaviour", {"name": "User Behaviour",    "entity_type": "other", "domain": "analytics"}),
     ("concept", "Concept", "con-error-rate",      {"name": "Error Rate",        "unit": "percentage"}),
     ("concept", "Topic",   "top-performance",     {"name": "System Performance","category": "reliability"}),
     ("concept", "Class",   "cls-kpi",             {"name": "KPI Class",         "definition": "Measurable business indicator"}),
@@ -74,7 +74,7 @@ NODES: list[tuple[str, str, str, dict]] = [
     ("lever", "Lever", "lever-query-limit",  {"name": "Query Result Limit", "unit": "rows",    "current": 10000, "min": 1000, "max": 100000}),
 
     # Policies
-    ("policy", "Policy",      "pol-data-access",   {"name": "Data Access Policy",   "version": "1.3"}),
+    ("policy", "Policy",      "pol-data-access",   {"name": "Data Access Policy",   "rule_type": "access", "effect": "allow", "version": "1.3"}),
     ("policy", "Sensitivity", "sens-pii",           {"name": "PII Sensitivity",      "level": "restricted"}),
     ("policy", "ApprovalRule","rule-prod-deploy",   {"name": "Production Deployment","approvers_required": 2}),
 ]

@@ -1,13 +1,29 @@
 'use client'
 
-import { useState } from 'react'
-import type { OcNode, SourceType } from '../lib/api'
-import { query, ingestSource } from '../lib/api'
+import { useEffect, useState } from 'react'
+import type { AgentAssetResult, DesktopStatus, LocalServicesStatus, OcNode, SourceType } from '../lib/api'
+import {
+  getDesktopStatus,
+  getLocalServicesStatus,
+  ingestSource,
+  installAgentAssets,
+  query,
+  saveDesktopMcpUrl,
+  startDesktopOAuth,
+  startLocalServices,
+} from '../lib/api'
 
-const SPACES = ['subject','resource','concept','evidence','outcome','lever','policy','claim','community']
+const SPACES = ['subject', 'resource', 'concept', 'evidence', 'outcome', 'lever', 'policy', 'claim', 'community']
 const SPACE_COLOR: Record<string, string> = {
-  subject:'#f8c537', resource:'#83a598', concept:'#b8bb26', evidence:'#bdae93',
-  outcome:'#fb4934', lever:'#d3869b', policy:'#fabd2f', claim:'#fe8019', community:'#8ec07c',
+  subject: '#f8c537',
+  resource: '#83a598',
+  concept: '#b8bb26',
+  evidence: '#bdae93',
+  outcome: '#fb4934',
+  lever: '#d3869b',
+  policy: '#fabd2f',
+  claim: '#fe8019',
+  community: '#8ec07c',
 }
 
 interface GraphControls {
@@ -28,19 +44,47 @@ interface Props {
 }
 
 export default function RightPanel({ selectedNode, controls, onControlChange, apiKey, onRefresh }: Props) {
-  const [tab, setTab] = useState<'detail' | 'query' | 'ingest'>('detail')
+  const [tab, setTab] = useState<'detail' | 'query' | 'ingest' | 'agent'>('detail')
   const [queryText, setQueryText] = useState('')
-  const [queryResults, setQueryResults] = useState<{ node_id: string; score: number; text: string }[]>([])
+  const [queryResults, setQueryResults] = useState<{ node_id: string | null; score?: number; text?: string | null }[]>([])
   const [querying, setQuerying] = useState(false)
   const [ingestSourceType, setIngestSourceType] = useState<SourceType>('obsidian')
   const [ingestToken, setIngestToken] = useState('')
   const [ingestQuery, setIngestQuery] = useState('')
   const [ingesting, setIngesting] = useState(false)
+  const [ingestPhase, setIngestPhase] = useState<'idle' | 'starting' | 'importing'>('idle')
+  const [startingServices, setStartingServices] = useState(false)
+  const [serviceStatus, setServiceStatus] = useState<LocalServicesStatus | null>(null)
   const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null)
+  const [desktopStatus, setDesktopStatus] = useState<DesktopStatus | null>(null)
+  const [mcpUrlInput, setMcpUrlInput] = useState('')
+  const [mcpApiKeyInput, setMcpApiKeyInput] = useState('')
+  const [agentTarget, setAgentTarget] = useState('both')
+  const [agentBusy, setAgentBusy] = useState(false)
+  const [agentResults, setAgentResults] = useState<AgentAssetResult[]>([])
+
+  useEffect(() => {
+    void refreshDesktopStatus()
+    void refreshLocalServices()
+  }, [])
 
   function showToast(msg: string, type: 'success' | 'error' = 'success') {
     setToast({ msg, type })
     setTimeout(() => setToast(null), 3000)
+  }
+
+  async function refreshDesktopStatus() {
+    const status = await getDesktopStatus()
+    setDesktopStatus(status)
+  }
+
+  async function refreshLocalServices() {
+    try {
+      const status = await getLocalServicesStatus()
+      setServiceStatus(status)
+    } catch {
+      setServiceStatus(null)
+    }
   }
 
   async function handleQuery() {
@@ -48,33 +92,98 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
     setQuerying(true)
     try {
       const res = await query(apiKey, queryText)
-      // Support both response formats
       setQueryResults(res.results ?? res.hits ?? res.chunks ?? [])
-    } catch (e) { showToast(String(e), 'error') }
-    finally { setQuerying(false) }
+    } catch (error) {
+      showToast(String(error), 'error')
+    } finally {
+      setQuerying(false)
+    }
   }
 
   async function handleIngest() {
     if (!ingestToken.trim()) return
     setIngesting(true)
+    setIngestPhase('starting')
     try {
+      const status = await startLocalServices()
+      setServiceStatus(status)
+      setIngestPhase('importing')
       await ingestSource(apiKey, ingestSourceType, ingestToken, { query: ingestQuery || undefined })
-      showToast('인제스트 완료!')
+      showToast('Ingest complete')
       setIngestToken('')
       setIngestQuery('')
       onRefresh()
-    } catch (e) { showToast(String(e), 'error') }
-    finally { setIngesting(false) }
+    } catch (error) {
+      showToast(String(error), 'error')
+    } finally {
+      setIngesting(false)
+      setIngestPhase('idle')
+    }
+  }
+
+  async function handleStartServices() {
+    setStartingServices(true)
+    try {
+      const status = await startLocalServices()
+      setServiceStatus(status)
+      showToast('Neo4j ready')
+    } catch (error) {
+      showToast(String(error), 'error')
+    } finally {
+      setStartingServices(false)
+    }
+  }
+
+  async function handleSaveMcpUrl() {
+    if (!mcpUrlInput.trim()) return
+    setAgentBusy(true)
+    try {
+      const result = await saveDesktopMcpUrl(mcpUrlInput.trim(), mcpApiKeyInput.trim())
+      showToast(`MCP ready: ${result.tools} tools`)
+      setMcpUrlInput('')
+      setMcpApiKeyInput('')
+      await refreshDesktopStatus()
+    } catch (error) {
+      showToast(String(error), 'error')
+    } finally {
+      setAgentBusy(false)
+    }
+  }
+
+  async function handleOAuthStart() {
+    setAgentBusy(true)
+    try {
+      await startDesktopOAuth()
+      showToast('OAuth browser opened')
+      setTimeout(() => void refreshDesktopStatus(), 2500)
+    } catch (error) {
+      showToast(String(error), 'error')
+    } finally {
+      setAgentBusy(false)
+    }
+  }
+
+  async function handleInstallAgentAssets() {
+    setAgentBusy(true)
+    try {
+      const results = await installAgentAssets(agentTarget)
+      setAgentResults(results)
+      showToast('Agent assets installed')
+    } catch (error) {
+      showToast(String(error), 'error')
+    } finally {
+      setAgentBusy(false)
+    }
   }
 
   function toggleSpace(space: string) {
     const hidden = controls.hiddenSpaces
     onControlChange({
-      hiddenSpaces: hidden.includes(space) ? hidden.filter(s => s !== space) : [...hidden, space],
+      hiddenSpaces: hidden.includes(space) ? hidden.filter((item) => item !== space) : [...hidden, space],
     })
   }
 
-  const S = (label: string, key: keyof GraphControls, min: number, max: number, step: number) => (
+  const slider = (label: string, key: keyof GraphControls, min: number, max: number, step: number) => (
     <div style={{ marginBottom: 14 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
         <span style={{ fontSize: 11, color: '#bdae93' }}>{label}</span>
@@ -83,42 +192,58 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
         </span>
       </div>
       <input
-        type="range" min={min} max={max} step={step}
+        type="range"
+        min={min}
+        max={max}
+        step={step}
         value={controls[key] as number}
-        onChange={e => onControlChange({ [key]: parseFloat(e.target.value) })}
+        onChange={(event) => onControlChange({ [key]: parseFloat(event.target.value) })}
         style={{ width: '100%', accentColor: '#f8c537', cursor: 'pointer' }}
       />
     </div>
   )
 
   return (
-    <div style={{
-      width: 260, minWidth: 260, background: '#1a1a1a',
-      borderLeft: '1px solid rgba(248,197,55,0.15)',
-      display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden',
-    }}>
-      {/* Tabs */}
+    <div
+      style={{
+        width: 260,
+        minWidth: 260,
+        background: '#1a1a1a',
+        borderLeft: '1px solid rgba(248,197,55,0.15)',
+        display: 'flex',
+        flexDirection: 'column',
+        height: '100%',
+        overflow: 'hidden',
+      }}
+    >
       <div style={{ display: 'flex', borderBottom: '1px solid rgba(248,197,55,0.15)' }}>
-        {(['detail','query','ingest'] as const).map(t => (
-          <button key={t} className={`tab ${tab === t ? 'active' : ''}`} onClick={() => setTab(t)}
-            style={{ flex: 1, fontSize: 11 }}>
-            {t === 'detail' ? '노드' : t === 'query' ? '쿼리' : '인제스트'}
+        {(['detail', 'query', 'ingest', 'agent'] as const).map((item) => (
+          <button
+            key={item}
+            className={`tab ${tab === item ? 'active' : ''}`}
+            onClick={() => setTab(item)}
+            style={{ flex: 1, fontSize: 11 }}
+          >
+            {item === 'detail' ? 'Node' : item === 'query' ? 'Query' : item === 'ingest' ? 'Ingest' : 'Agent'}
           </button>
         ))}
       </div>
 
       <div style={{ flex: 1, overflowY: 'auto', padding: '12px 14px' }}>
-
-        {/* DETAIL TAB */}
-        {tab === 'detail' && (
-          selectedNode ? (
+        {tab === 'detail' &&
+          (selectedNode ? (
             <div>
               <div style={{ marginBottom: 10 }}>
                 <div style={{ fontSize: 10, color: '#555', marginBottom: 4, letterSpacing: '0.06em' }}>NODE ID</div>
-                <div className="mono" style={{ fontSize: 12, color: '#faf2d6', wordBreak: 'break-all' }}>{selectedNode.id}</div>
+                <div className="mono" style={{ fontSize: 12, color: '#faf2d6', wordBreak: 'break-all' }}>
+                  {selectedNode.id}
+                </div>
               </div>
               <div style={{ display: 'flex', gap: 6, marginBottom: 12 }}>
-                <span className="badge" style={{ background: `${SPACE_COLOR[selectedNode.space]}22`, color: SPACE_COLOR[selectedNode.space] }}>
+                <span
+                  className="badge"
+                  style={{ background: `${SPACE_COLOR[selectedNode.space]}22`, color: SPACE_COLOR[selectedNode.space] }}
+                >
                   {selectedNode.space}
                 </span>
                 <span className="badge">{selectedNode.node_type}</span>
@@ -126,138 +251,273 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
               </div>
               <hr className="gold-line" />
               <div style={{ fontSize: 10, color: '#555', marginBottom: 6, letterSpacing: '0.06em' }}>PROPERTIES</div>
-              {Object.entries(selectedNode.properties).map(([k, v]) => (
-                <div key={k} style={{
-                  display: 'flex', gap: 8, padding: '4px 0',
-                  borderBottom: '1px solid #222', fontSize: 11,
-                }}>
-                  <span style={{ color: '#7c6f64', minWidth: 80, flexShrink: 0 }}>{k}</span>
-                  <span style={{ color: '#bdae93', wordBreak: 'break-all' }}>{String(v)}</span>
+              {Object.entries(selectedNode.properties).map(([key, value]) => (
+                <div
+                  key={key}
+                  style={{
+                    display: 'flex',
+                    gap: 8,
+                    padding: '4px 0',
+                    borderBottom: '1px solid #222',
+                    fontSize: 11,
+                  }}
+                >
+                  <span style={{ color: '#7c6f64', minWidth: 80, flexShrink: 0 }}>{key}</span>
+                  <span style={{ color: '#bdae93', wordBreak: 'break-all' }}>{String(value)}</span>
                 </div>
               ))}
             </div>
           ) : (
             <div style={{ color: '#555', fontSize: 12, marginTop: 20, textAlign: 'center' }}>
-              그래프에서 노드를 클릭하면<br/>상세 정보가 표시돼
+              Select a graph node to inspect its details.
             </div>
-          )
-        )}
+          ))}
 
-        {/* QUERY TAB */}
         {tab === 'query' && (
           <div>
             <textarea
               className="input-dark"
               value={queryText}
-              onChange={e => setQueryText(e.target.value)}
-              placeholder="무엇이든 물어봐... (e.g. 전략적 레버는 무엇인가?)"
+              onChange={(event) => setQueryText(event.target.value)}
+              placeholder="Ask anything about the graph"
               style={{ marginBottom: 8, height: 80, fontSize: 12 }}
-              onKeyDown={e => { if (e.key === 'Enter' && e.metaKey) handleQuery() }}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && event.metaKey) handleQuery()
+              }}
             />
-            <button className="btn-gold" style={{ width: '100%', marginBottom: 12 }}
-              onClick={handleQuery} disabled={querying}>
-              {querying ? '검색 중…' : '쿼리 ↵'}
+            <button className="btn-gold" style={{ width: '100%', marginBottom: 12 }} onClick={handleQuery} disabled={querying}>
+              {querying ? 'Searching...' : 'Run Query'}
             </button>
             <div>
-              {queryResults.map((r, i) => (
-                <div key={i} style={{
-                  padding: '8px 10px', marginBottom: 6,
-                  background: '#1f1f1f', borderRadius: 4,
-                  border: '1px solid #2e2e2e', fontSize: 11,
-                }}>
-                  <div style={{ color: '#f8c537', marginBottom: 2 }}>{r.node_id ?? '—'}</div>
-                  <div style={{ color: '#bdae93', fontSize: 10, marginBottom: 4 }}>{r.text?.slice(0, 100)}…</div>
-                  <div style={{ color: '#555', fontSize: 10 }}>score: {r.score?.toFixed(3)}</div>
+              {queryResults.map((result, index) => (
+                <div
+                  key={index}
+                  style={{
+                    padding: '8px 10px',
+                    marginBottom: 6,
+                    background: '#1f1f1f',
+                    borderRadius: 4,
+                    border: '1px solid #2e2e2e',
+                    fontSize: 11,
+                  }}
+                >
+                  <div style={{ color: '#f8c537', marginBottom: 2 }}>{result.node_id ?? 'unknown'}</div>
+                  <div style={{ color: '#bdae93', fontSize: 10, marginBottom: 4 }}>
+                    {result.text ? `${result.text.slice(0, 100)}...` : 'No preview'}
+                  </div>
+                  <div style={{ color: '#555', fontSize: 10 }}>score: {result.score?.toFixed(3) ?? 'n/a'}</div>
                 </div>
               ))}
             </div>
           </div>
         )}
 
-        {/* INGEST TAB */}
         {tab === 'ingest' && (
           <div>
+            <div
+              style={{
+                border: '1px solid #2e2e2e',
+                borderRadius: 4,
+                padding: 8,
+                marginBottom: 10,
+                fontSize: 11,
+                color: '#bdae93',
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                <span style={{ color: serviceStatus?.ok ? '#8ec07c' : '#fb4934' }}>
+                  Neo4j {serviceStatus?.ok ? 'ready' : 'not ready'}
+                </span>
+                <button
+                  className="btn-gold"
+                  style={{ fontSize: 11, padding: '4px 8px' }}
+                  onClick={handleStartServices}
+                  disabled={startingServices || ingesting}
+                >
+                  {startingServices ? 'Starting...' : 'Start'}
+                </button>
+              </div>
+              <div className="mono" style={{ marginTop: 6, color: '#7c6f64', wordBreak: 'break-all' }}>
+                {serviceStatus?.neo4j?.boltUrl ?? 'bolt://localhost:7688'}
+              </div>
+            </div>
             <div style={{ marginBottom: 8 }}>
-              <label style={{ fontSize: 11, color: '#7c6f64', display: 'block', marginBottom: 4 }}>소스 타입</label>
-              <select className="input-dark" value={ingestSourceType}
-                onChange={e => setIngestSourceType(e.target.value as SourceType)}
-                style={{ fontSize: 12 }}>
-                <option value="obsidian">📓 Obsidian</option>
-                <option value="notion">📝 Notion</option>
-                <option value="gdrive">📂 Google Drive</option>
-                <option value="github">🐙 GitHub</option>
+              <label style={{ fontSize: 11, color: '#7c6f64', display: 'block', marginBottom: 4 }}>Source type</label>
+              <select
+                className="input-dark"
+                value={ingestSourceType}
+                onChange={(event) => setIngestSourceType(event.target.value as SourceType)}
+                style={{ fontSize: 12 }}
+              >
+                <option value="obsidian">Obsidian</option>
+                <option value="notion">Notion</option>
+                <option value="gdrive">Google Drive</option>
+                <option value="github">GitHub</option>
               </select>
             </div>
             <div style={{ marginBottom: 8 }}>
               <label style={{ fontSize: 11, color: '#7c6f64', display: 'block', marginBottom: 4 }}>
-                액세스 토큰 {ingestSourceType === 'obsidian' && '(Obsidian Sync API Key)'}
+                Access token {ingestSourceType === 'obsidian' && '(Obsidian Sync API key)'}
               </label>
-              <input className="input-dark mono" value={ingestToken}
-                onChange={e => setIngestToken(e.target.value)}
-                placeholder="API 토큰 입력…"
+              <input
+                className="input-dark mono"
+                value={ingestToken}
+                onChange={(event) => setIngestToken(event.target.value)}
+                placeholder="Enter API token"
                 type="password"
                 style={{ fontSize: 11 }}
               />
             </div>
             <div style={{ marginBottom: 8 }}>
-              <label style={{ fontSize: 11, color: '#7c6f64', display: 'block', marginBottom: 4 }}>검색어 (선택)</label>
-              <input className="input-dark" value={ingestQuery}
-                onChange={e => setIngestQuery(e.target.value)}
-                placeholder="가져올 데이터 검색어…"
+              <label style={{ fontSize: 11, color: '#7c6f64', display: 'block', marginBottom: 4 }}>Search query (optional)</label>
+              <input
+                className="input-dark"
+                value={ingestQuery}
+                onChange={(event) => setIngestQuery(event.target.value)}
+                placeholder="Filter imported data"
                 style={{ fontSize: 11 }}
               />
             </div>
-            <button className="btn-gold" style={{ width: '100%' }}
-              onClick={handleIngest} disabled={ingesting || !ingestToken.trim()}>
-              {ingesting ? '처리 중…' : '데이터 가져오기'}
+            <button
+              className="btn-gold"
+              style={{ width: '100%' }}
+              onClick={handleIngest}
+              disabled={ingesting || startingServices || !ingestToken.trim()}
+            >
+              {ingestPhase === 'starting' ? 'Starting Neo4j...' : ingestPhase === 'importing' ? 'Importing...' : 'Import Data'}
             </button>
             <div style={{ marginTop: 8, fontSize: 10, color: '#555', lineHeight: 1.5 }}>
-              선택한 소스의 데이터를 GraphRAG 온톨로지로 변환해 저장해
+              Connected source data is converted into GraphRAG-ready ontology records.
             </div>
           </div>
         )}
 
-        {/* Graph Controls — always visible below */}
-        <hr className="gold-line" style={{ marginTop: 16 }} />
-        <div style={{ fontSize: 10, color: '#555', letterSpacing: '0.08em', marginBottom: 10 }}>그래프 설정</div>
+        {tab === 'agent' && (
+          <div>
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ fontSize: 10, color: '#555', marginBottom: 4, letterSpacing: '0.06em' }}>MCP ENDPOINT</div>
+              <div style={{ color: desktopStatus?.mcpUrlConfigured ? '#8ec07c' : '#fb4934', fontSize: 11, wordBreak: 'break-all' }}>
+                {desktopStatus?.mcpUrlConfigured ? desktopStatus.mcpUrl : 'not connected'}
+              </div>
+            </div>
 
-        {/* Search */}
+            <button className="btn-gold" style={{ width: '100%', marginBottom: 8 }} onClick={handleOAuthStart} disabled={agentBusy}>
+              Connect OAuth
+            </button>
+
+            <input
+              className="input-dark mono"
+              value={mcpUrlInput}
+              onChange={(event) => setMcpUrlInput(event.target.value)}
+              placeholder="Paste OpenCrab MCP URL"
+              type="password"
+              style={{ fontSize: 11, marginBottom: 6 }}
+            />
+            <input
+              className="input-dark mono"
+              value={mcpApiKeyInput}
+              onChange={(event) => setMcpApiKeyInput(event.target.value)}
+              placeholder="Bearer token (optional)"
+              type="password"
+              style={{ fontSize: 11, marginBottom: 8 }}
+            />
+            <button className="btn-gold" style={{ width: '100%', marginBottom: 14 }} onClick={handleSaveMcpUrl} disabled={agentBusy || !mcpUrlInput.trim()}>
+              Save MCP URL
+            </button>
+
+            <div style={{ marginBottom: 8 }}>
+              <label style={{ fontSize: 11, color: '#7c6f64', display: 'block', marginBottom: 4 }}>Install target</label>
+              <select className="input-dark" value={agentTarget} onChange={(event) => setAgentTarget(event.target.value)} style={{ fontSize: 12 }}>
+                <option value="both">User: Codex + Claude + Plugin</option>
+                <option value="plugin">Codex plugin</option>
+                <option value="codex">User: Codex</option>
+                <option value="claude">User: Claude</option>
+                <option value="project-both">Project: Codex + Claude</option>
+                <option value="project">Project: Codex</option>
+                <option value="project-claude">Project: Claude</option>
+              </select>
+            </div>
+            <button
+              className="btn-gold"
+              style={{ width: '100%', marginBottom: 10 }}
+              onClick={handleInstallAgentAssets}
+              disabled={agentBusy || !desktopStatus?.mcpUrlConfigured}
+            >
+              {agentBusy ? 'Working...' : 'Install Agent Assets'}
+            </button>
+
+            {agentResults.length > 0 && (
+              <div>
+                {agentResults.map((result, index) => (
+                  <div
+                    key={`${result.label}-${index}`}
+                    style={{
+                      padding: '7px 8px',
+                      marginBottom: 6,
+                      background: '#1f1f1f',
+                      borderRadius: 4,
+                      border: '1px solid #2e2e2e',
+                      fontSize: 10,
+                    }}
+                  >
+                    <div style={{ color: '#f8c537', marginBottom: 2 }}>{result.label}</div>
+                    <div className="mono" style={{ color: '#7c6f64', wordBreak: 'break-all' }}>
+                      {result.path ?? result.status ?? 'done'}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        <hr className="gold-line" style={{ marginTop: 16 }} />
+        <div style={{ fontSize: 10, color: '#555', letterSpacing: '0.08em', marginBottom: 10 }}>GRAPH SETTINGS</div>
+
         <div style={{ marginBottom: 12 }}>
-          <input className="input-dark" value={controls.searchTerm}
-            onChange={e => onControlChange({ searchTerm: e.target.value })}
-            placeholder="노드 검색…" style={{ fontSize: 11 }} />
+          <input
+            className="input-dark"
+            value={controls.searchTerm}
+            onChange={(event) => onControlChange({ searchTerm: event.target.value })}
+            placeholder="Search nodes"
+            style={{ fontSize: 11 }}
+          />
         </div>
 
-        {/* Space filters */}
         <div style={{ marginBottom: 12 }}>
-          <div style={{ fontSize: 10, color: '#7c6f64', marginBottom: 6 }}>스페이스 필터</div>
+          <div style={{ fontSize: 10, color: '#7c6f64', marginBottom: 6 }}>Space filters</div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
-            {SPACES.map(s => {
-              const hidden = controls.hiddenSpaces.includes(s)
+            {SPACES.map((space) => {
+              const hidden = controls.hiddenSpaces.includes(space)
               return (
-                <button key={s} onClick={() => toggleSpace(s)} style={{
-                  padding: '2px 8px', fontSize: 10, borderRadius: 10, cursor: 'pointer',
-                  background: hidden ? '#1f1f1f' : `${SPACE_COLOR[s]}22`,
-                  color: hidden ? '#555' : SPACE_COLOR[s],
-                  border: `1px solid ${hidden ? '#333' : SPACE_COLOR[s]}`,
-                  textDecoration: hidden ? 'line-through' : 'none',
-                }}>
-                  {s}
+                <button
+                  key={space}
+                  onClick={() => toggleSpace(space)}
+                  style={{
+                    padding: '2px 8px',
+                    fontSize: 10,
+                    borderRadius: 10,
+                    cursor: 'pointer',
+                    background: hidden ? '#1f1f1f' : `${SPACE_COLOR[space]}22`,
+                    color: hidden ? '#555' : SPACE_COLOR[space],
+                    border: `1px solid ${hidden ? '#333' : SPACE_COLOR[space]}`,
+                    textDecoration: hidden ? 'line-through' : 'none',
+                  }}
+                >
+                  {space}
                 </button>
               )
             })}
           </div>
         </div>
 
-        {S('노드 크기', 'nodeSize', 0.5, 3, 0.1)}
-        {S('링크 두께', 'linkStrength', 0.1, 1, 0.05)}
-        {S('중심 강력', 'centerForce', 0.01, 1, 0.01)}
-        {S('반발력', 'repelForce', 50, 500, 10)}
+        {slider('Node size', 'nodeSize', 0.5, 3, 0.1)}
+        {slider('Link strength', 'linkStrength', 0.1, 1, 0.05)}
+        {slider('Center force', 'centerForce', 0.01, 1, 0.01)}
+        {slider('Repel force', 'repelForce', 50, 500, 10)}
       </div>
 
-      {toast && (
-        <div className={`toast toast-${toast.type}`}>{toast.msg}</div>
-      )}
+      {toast && <div className={`toast toast-${toast.type}`}>{toast.msg}</div>}
     </div>
   )
 }

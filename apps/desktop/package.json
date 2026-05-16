@@ -1,0 +1,82 @@
+{
+  "name": "opencrab-desktop",
+  "version": "1.0.0",
+  "description": "OpenCrab Desktop Application",
+  "author": "OpenCrab",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build:web": "npm --prefix ../web run build",
+    "predist:win": "npm run build:web",
+    "prepack": "npm run build:web",
+    "pack": "electron-builder --dir -p never",
+    "dist:win": "electron-builder --win nsis -p never",
+    "build": "npm run dist:win"
+  },
+  "build": {
+    "productName": "OpenCrab",
+    "appId": "com.opencrab.desktop",
+    "compression": "store",
+    "win": {
+      "target": "nsis",
+      "icon": "../../logo.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": true,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "runAfterFinish": true,
+      "include": "installer.nsh"
+    },
+    "extraResources": [
+      {
+        "from": "../../.venv",
+        "to": ".venv",
+        "filter": ["**/*", "!**/__pycache__/**", "!**/*.pyc", "!**/*.pyo"]
+      },
+      {
+        "from": "../../opencrab",
+        "to": "opencrab",
+        "filter": ["**/*", "!**/__pycache__/**", "!**/*.pyc", "!**/*.pyo"]
+      },
+      {
+        "from": "../api",
+        "to": "apps/api",
+        "filter": ["**/*", "!**/__pycache__/**", "!**/*.pyc", "!**/*.pyo"]
+      },
+      {
+        "from": "../web",
+        "to": "apps/web",
+        "filter": ["**/*", "!.next/cache/**", "!node_modules/.cache/**", "!*.tsbuildinfo"]
+      },
+      {
+        "from": "../../scripts",
+        "to": "scripts",
+        "filter": ["**/*"]
+      },
+      {
+        "from": "../../skills",
+        "to": "skills",
+        "filter": ["**/*"]
+      },
+      {
+        "from": "../../docker-compose.yml",
+        "to": "docker-compose.yml"
+      },
+      {
+        "from": "../../.env.example",
+        "to": ".env"
+      }
+    ]
+  },
+  "dependencies": {
+    "tree-kill": "^1.2.2"
+  },
+  "devDependencies": {
+    "electron": "^30.0.0",
+    "electron-builder": "^24.13.3"
+  }
+}
