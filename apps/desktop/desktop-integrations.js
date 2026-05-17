@@ -3,12 +3,16 @@ const fs = require('fs');
 const http = require('http');
 const os = require('os');
 const path = require('path');
-const { spawnSync } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 
 const DEFAULT_CONTROL_PORT = 18273;
 const OAUTH_PROTOCOL = 'opencrab';
 const SERVER_NAME = 'opencrab';
 const SKILL_NAME = 'opencrab-mcp';
+const DEFAULT_CODEX_MODEL = 'gpt-5.5';
+const DEFAULT_CODEX_REASONING = 'high';
+const DEFAULT_CODEX_PERMISSION = 'auto';
+const CODEX_TASK_TIMEOUT_MS = 30 * 60 * 1000;
 
 let controlServer;
 let pendingOAuth = null;
@@ -341,6 +345,452 @@ function commandExists(command) {
   return result.status === 0;
 }
 
+function isFile(filePath) {
+  try {
+    return fs.existsSync(filePath) && fs.statSync(filePath).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function listDirs(parent) {
+  try {
+    return fs.readdirSync(parent)
+      .map((entry) => path.join(parent, entry))
+      .filter((entry) => fs.statSync(entry).isDirectory());
+  } catch {
+    return [];
+  }
+}
+
+function expandHome(input) {
+  if (input === '~') return os.homedir();
+  if (input.startsWith(`~${path.sep}`)) return path.join(os.homedir(), input.slice(2));
+  return input;
+}
+
+function pathEntries(pathValue) {
+  return (pathValue || process.env.PATH || '')
+    .split(path.delimiter)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+function defaultPathEntries() {
+  const entries = process.platform === 'win32'
+    ? [
+        process.env.APPDATA ? path.join(process.env.APPDATA, 'npm') : '',
+        'C:\\Program Files\\nodejs',
+      ]
+    : [
+        '/opt/homebrew/bin',
+        '/usr/local/bin',
+        '/usr/bin',
+        '/bin',
+        '/usr/sbin',
+        '/sbin',
+      ];
+  return entries.filter(Boolean);
+}
+
+function mergePath(pathValue, extraEntries = []) {
+  const seen = new Set();
+  const merged = [];
+  const add = (entry) => {
+    const normalized = String(entry || '').trim();
+    if (!normalized || seen.has(normalized)) return;
+    seen.add(normalized);
+    merged.push(normalized);
+  };
+
+  extraEntries.forEach(add);
+  pathEntries(pathValue).forEach(add);
+  defaultPathEntries().forEach(add);
+  return merged.join(path.delimiter);
+}
+
+function parseEnvironmentVariables(input) {
+  const env = {};
+  for (const rawLine of String(input || '').split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) continue;
+    const equalsIndex = line.indexOf('=');
+    if (equalsIndex <= 0) continue;
+    const key = line.slice(0, equalsIndex).trim();
+    const value = line.slice(equalsIndex + 1).trim();
+    if (key) env[key] = value;
+  }
+  return env;
+}
+
+function buildCodexProcessEnv(extraInput = '', overrides = {}) {
+  const parsed = parseEnvironmentVariables(extraInput);
+  const basePath = parsed.PATH || overrides.PATH || process.env.PATH || '';
+  return {
+    ...process.env,
+    ...overrides,
+    ...parsed,
+    PATH: mergePath(basePath),
+  };
+}
+
+function findCodexCli(customPath = '', pathValue = '') {
+  const custom = String(customPath || '').trim();
+  if (custom && isFile(expandHome(custom))) return expandHome(custom);
+
+  const names = process.platform === 'win32'
+    ? ['codex.exe', 'codex.cmd', 'codex.ps1', 'codex']
+    : ['codex'];
+
+  for (const entry of pathEntries(pathValue)) {
+    for (const name of names) {
+      const candidate = path.join(entry, name);
+      if (isFile(candidate)) return candidate;
+    }
+  }
+
+  const home = os.homedir();
+  const nvmBins = listDirs(path.join(home, '.nvm', 'versions', 'node'))
+    .map((dir) => path.join(dir, 'bin', process.platform === 'win32' ? 'codex.cmd' : 'codex'));
+  const candidates = process.platform === 'win32'
+    ? [
+        path.join(process.env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'npm', 'codex.cmd'),
+        path.join(process.env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'npm', 'codex.exe'),
+      ]
+    : [
+        '/opt/homebrew/bin/codex',
+        '/usr/local/bin/codex',
+        path.join(home, '.npm-global', 'bin', 'codex'),
+        ...nvmBins,
+      ];
+
+  return candidates.find(isFile) || '';
+}
+
+function resolveCodexSpawnTarget(codexPath, args) {
+  if (process.platform !== 'win32' || !/codex\.cmd$/i.test(codexPath)) {
+    return { command: codexPath, args, shell: process.platform === 'win32' };
+  }
+
+  const codexJs = path.join(path.dirname(codexPath), 'node_modules', '@openai', 'codex', 'bin', 'codex.js');
+  if (!fs.existsSync(codexJs)) {
+    return { command: codexPath, args, shell: true };
+  }
+
+  return { command: 'node', args: [codexJs, ...args], shell: false };
+}
+
+function normalizeCodexReasoning(value) {
+  const allowed = new Set(['low', 'medium', 'high', 'xhigh']);
+  const normalized = String(value || DEFAULT_CODEX_REASONING).trim().toLowerCase();
+  return allowed.has(normalized) ? normalized : DEFAULT_CODEX_REASONING;
+}
+
+function normalizeCodexPermission(value) {
+  const allowed = new Set(['review', 'auto', 'yolo']);
+  const normalized = String(value || DEFAULT_CODEX_PERMISSION).trim().toLowerCase();
+  return allowed.has(normalized) ? normalized : DEFAULT_CODEX_PERMISSION;
+}
+
+function normalizeCodexModel(value) {
+  const normalized = String(value || DEFAULT_CODEX_MODEL).trim();
+  return /^[A-Za-z0-9._:-]+$/.test(normalized) ? normalized : DEFAULT_CODEX_MODEL;
+}
+
+function normalizeTimeoutMs(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return CODEX_TASK_TIMEOUT_MS;
+  return Math.max(10000, Math.min(parsed, 2 * 60 * 60 * 1000));
+}
+
+function redactSensitiveText(value) {
+  let next = String(value || '');
+  const secrets = [
+    process.env.OPENCRAB_MCP_URL,
+    process.env.OPENCRAB_MCP_API_KEY,
+  ].filter(Boolean);
+  for (const secret of secrets) {
+    next = next.split(secret).join('<redacted>');
+  }
+  next = next.replace(/(\/api\/mcp\/)[^/?#\s"'<>)]*/g, '$1<token>');
+  return next;
+}
+
+function formatProgressLine(line) {
+  const cleaned = String(line || '').replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, '').trim();
+  if (!cleaned) return '';
+  if (/^user$/i.test(cleaned) || /^codex$/i.test(cleaned)) return '';
+  if (/^tokens used\b/i.test(cleaned)) return cleaned;
+  if (/^OpenAI Codex\b/i.test(cleaned)) return cleaned;
+  if (/^workdir:/i.test(cleaned)) return cleaned;
+  if (/^model:/i.test(cleaned)) return cleaned;
+  if (/^approval:/i.test(cleaned)) return cleaned;
+  if (/^sandbox:/i.test(cleaned)) return cleaned;
+  if (/^session id:/i.test(cleaned)) return cleaned;
+  if (/\bERROR\b/.test(cleaned)) return cleaned;
+  if (/^(read|write|edit|apply|patch|search|run|exec|open|thinking|reasoning|update|create|delete|move|list|find|scan|inspect|build|test|verify|commit|tag|push|install|copy|generate|ingest)\b/i.test(cleaned)) return cleaned.slice(0, 240);
+  if (/^(reading|writing|editing|applying|searching|running|executing|opening|creating|deleting|moving|listing|finding|scanning|inspecting|building|testing|verifying|committing|tagging|pushing|installing|copying|generating|ingesting)\b/i.test(cleaned)) return cleaned.slice(0, 240);
+  if (/^(rg|sed|cat|ls|git|npm|node|tsc|mkdir|cp|mv|python|python3|gh|codex|docker)\b/i.test(cleaned)) return cleaned.slice(0, 240);
+  if (/^[A-Za-z0-9_./~:-]+\.(ts|tsx|js|jsx|css|json|md|py|cypher|csv|yml|yaml):?\d*/.test(cleaned)) return cleaned.slice(0, 240);
+  return '';
+}
+
+function getCodexWorkspace(app, rootDir, requestedCwd = '') {
+  const cwd = String(requestedCwd || '').trim();
+  if (cwd && fs.existsSync(cwd) && fs.statSync(cwd).isDirectory()) {
+    return cwd;
+  }
+
+  if (!app.isPackaged) {
+    return rootDir;
+  }
+
+  const workspace = path.join(app.getPath('userData'), 'codex-workspace');
+  fs.mkdirSync(path.join(workspace, 'opencrab_data', 'ingest'), { recursive: true });
+  return workspace;
+}
+
+function getCodexStatus(rootDir, serviceEnv = {}) {
+  const env = buildCodexProcessEnv('', serviceEnv);
+  const codexPath = findCodexCli(process.env.OPENCRAB_CODEX_CLI_PATH || '', env.PATH);
+  if (!codexPath) {
+    return {
+      ok: true,
+      available: false,
+      path: '',
+      version: '',
+      message: 'Codex CLI not found. Install @openai/codex and run codex login.',
+    };
+  }
+
+  const result = spawnSync(codexPath, ['--version'], {
+    encoding: 'utf8',
+    shell: process.platform === 'win32',
+    env,
+  });
+
+  return {
+    ok: true,
+    available: result.status === 0,
+    path: codexPath,
+    version: (result.stdout || result.stderr || '').trim(),
+    message: result.status === 0 ? 'Codex CLI ready' : redactSensitiveText(result.stderr || result.stdout || 'Codex CLI check failed'),
+  };
+}
+
+function createCodexTaskFile(app, taskContext) {
+  const taskId = `${new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z')}-${randomBase64Url(4)}`;
+  const taskDir = path.join(app.getPath('userData'), 'codex-tasks');
+  fs.mkdirSync(taskDir, { recursive: true });
+  const taskFile = path.join(taskDir, `opencrab-codex-task-${taskId}.md`);
+  const content = buildCodexTaskContent({ ...taskContext, taskId, taskFile });
+  fs.writeFileSync(taskFile, content, 'utf8');
+  return { taskId, taskFile, content };
+}
+
+function buildCodexTaskContent({
+  task,
+  taskId,
+  taskFile,
+  rootDir,
+  cwd,
+  serviceStatus,
+  serviceEnv,
+  mcpUrl,
+}) {
+  const neo4j = serviceStatus?.neo4j || {};
+  const localMcp = 'http://127.0.0.1:8080/mcp';
+  const configuredMcp = mcpUrl || serviceEnv.OPENCRAB_MCP_URL || localMcp;
+  const ingestDir = path.join(cwd, 'opencrab_data', 'ingest');
+
+  return `# OpenCrab Codex Task
+
+Task ID: ${taskId}
+Task file: ${taskFile}
+Workspace: ${cwd}
+OpenCrab runtime root: ${rootDir}
+
+## User Request
+
+${task}
+
+## Local OpenCrab Context
+
+- FastAPI: http://127.0.0.1:8080
+- Local MCP: ${localMcp}
+- Configured MCP: ${configuredMcp ? redactMcpUrl(configuredMcp) : 'not configured'}
+- Neo4j Browser: ${neo4j.browserUrl || serviceEnv.NEO4J_BROWSER_URL || 'http://localhost:7475'}
+- Neo4j Bolt: ${neo4j.boltUrl || serviceEnv.NEO4J_URI || 'bolt://localhost:7688'}
+- Neo4j user: ${neo4j.username || serviceEnv.NEO4J_USER || 'neo4j'}
+- Neo4j password: ${serviceEnv.NEO4J_PASSWORD || 'opencrab'}
+- Default ingest output directory: ${ingestDir}
+
+## Operating Instructions
+
+- You are Codex running from OpenCrab Desktop, modeled after the Codexian CLI workflow.
+- Use the local OpenCrab services and Neo4j connection when the task involves graph, ontology, or ingest work.
+- If creating ingest files, put them under the default ingest output directory unless the user explicitly names another path.
+- Prefer structured files such as Markdown, JSONL, CSV, or Cypher with clear source metadata.
+- Use the OpenCrab MCP endpoint through the configured environment variables when useful.
+- Do not print raw MCP URLs, API tokens, or secrets in your final answer.
+- Keep changes scoped to the user's request.
+`;
+}
+
+async function runCodexTask({ app, rootDir, log, ensureLocalServices, getLocalServicesStatus, getServiceEnv, body }) {
+  const task = String(body.prompt || body.task || '').trim();
+  if (!task) {
+    throw new Error('Codex task prompt is required.');
+  }
+
+  const serviceEnv = getServiceEnv ? { ...getServiceEnv() } : {};
+  let serviceStatus = null;
+  if (body.ensureServices !== false && ensureLocalServices) {
+    serviceStatus = await ensureLocalServices();
+  } else if (getLocalServicesStatus) {
+    serviceStatus = await getLocalServicesStatus();
+  }
+
+  const env = buildCodexProcessEnv(String(body.environmentVariables || ''), serviceEnv);
+  const codexPath = findCodexCli(String(body.codexPath || process.env.OPENCRAB_CODEX_CLI_PATH || ''), env.PATH);
+  if (!codexPath) {
+    throw new Error('Codex CLI not found. Install with `npm install -g @openai/codex`, then run `codex login`.');
+  }
+
+  env.PATH = mergePath(env.PATH, [path.dirname(codexPath)]);
+  const cwd = getCodexWorkspace(app, rootDir, body.cwd);
+  fs.mkdirSync(path.join(cwd, 'opencrab_data', 'ingest'), { recursive: true });
+
+  const model = normalizeCodexModel(body.model || process.env.OPENCRAB_CODEX_MODEL);
+  const reasoning = normalizeCodexReasoning(body.reasoningEffort || process.env.OPENCRAB_CODEX_REASONING);
+  const permission = normalizeCodexPermission(body.permissionMode || process.env.OPENCRAB_CODEX_PERMISSION);
+  const timeoutMs = normalizeTimeoutMs(body.timeoutMs);
+  const { taskId, taskFile, content } = createCodexTaskFile(app, {
+    task,
+    rootDir,
+    cwd,
+    serviceStatus,
+    serviceEnv: env,
+    mcpUrl: currentMcpUrl(),
+  });
+  const outputPath = path.join(path.dirname(taskFile), `opencrab-codex-result-${taskId}.md`);
+
+  env.OPENCRAB_CODEX_TASK_FILE = taskFile;
+  env.OPENCRAB_CODEX_TASK_ID = taskId;
+  env.OPENCRAB_CODEX_WORKSPACE = cwd;
+  env.OPENCRAB_DESKTOP_ROOT = rootDir;
+
+  const args = [
+    'exec',
+    '--color',
+    'never',
+    '--output-last-message',
+    outputPath,
+    '--skip-git-repo-check',
+    '--cd',
+    cwd,
+    '--model',
+    model,
+    '--config',
+    `model_reasoning_effort="${reasoning}"`,
+  ];
+
+  if (permission === 'yolo') {
+    args.splice(1, 0, '--dangerously-bypass-approvals-and-sandbox');
+  } else if (permission === 'auto') {
+    args.splice(1, 0, '--full-auto');
+  } else {
+    args.splice(1, 0, '--sandbox', 'workspace-write');
+  }
+
+  const spawnTarget = resolveCodexSpawnTarget(codexPath, args);
+  const progress = [];
+  let stdoutBuffer = '';
+  let stderrBuffer = '';
+  let lastProgress = '';
+  let timedOut = false;
+
+  log('Codex Task', `starting ${taskId} with ${path.basename(codexPath)} in ${cwd}`);
+
+  await new Promise((resolve, reject) => {
+    const child = spawn(spawnTarget.command, spawnTarget.args, {
+      env,
+      cwd,
+      shell: spawnTarget.shell,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      try {
+        child.kill();
+      } catch {
+        // Best effort only.
+      }
+    }, timeoutMs);
+
+    child.stdin?.end(content);
+
+    child.stdout.on('data', (chunk) => {
+      stdoutBuffer += chunk.toString();
+      const lines = stdoutBuffer.split(/\r?\n/);
+      stdoutBuffer = lines.pop() || '';
+      for (const line of lines) {
+        const formatted = formatProgressLine(line);
+        if (formatted && formatted !== lastProgress) {
+          lastProgress = formatted;
+          progress.push(redactSensitiveText(formatted));
+          if (progress.length > 120) progress.shift();
+          log('Codex Task', redactSensitiveText(formatted));
+        }
+      }
+    });
+
+    child.stderr.on('data', (chunk) => {
+      stderrBuffer += chunk.toString();
+    });
+
+    child.on('error', (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+
+    child.on('close', (code) => {
+      clearTimeout(timeout);
+      if (timedOut) {
+        reject(new Error(`Codex task timed out after ${Math.round(timeoutMs / 1000)}s.`));
+        return;
+      }
+      if (code && code !== 0) {
+        reject(new Error(`Codex exited with code ${code}: ${redactSensitiveText(stderrBuffer || stdoutBuffer).slice(0, 2000)}`));
+        return;
+      }
+      resolve();
+    });
+  });
+
+  const finalMessage = fs.existsSync(outputPath)
+    ? redactSensitiveText(fs.readFileSync(outputPath, 'utf8').trim())
+    : '';
+
+  log('Codex Task', `completed ${taskId}`);
+
+  return {
+    ok: true,
+    taskId,
+    taskFile,
+    outputFile: outputPath,
+    cwd,
+    codexPath,
+    model,
+    reasoningEffort: reasoning,
+    permissionMode: permission,
+    progress,
+    finalMessage,
+  };
+}
+
 function registerCodexMcp(serverFile) {
   if (!commandExists('codex')) {
     return 'codex command not found; wrote files only';
@@ -557,7 +1007,7 @@ function readJsonBody(request) {
   });
 }
 
-function createControlHandler({ app, shell, rootDir, log, ensureLocalServices, getLocalServicesStatus, getPort }) {
+function createControlHandler({ app, shell, rootDir, log, ensureLocalServices, getLocalServicesStatus, getServiceEnv, getPort }) {
   return async (request, response) => {
     if (request.method === 'OPTIONS') {
       sendJson(response, 200, { ok: true });
@@ -585,6 +1035,11 @@ function createControlHandler({ app, shell, rootDir, log, ensureLocalServices, g
       if (request.method === 'GET' && url.pathname === '/desktop/services/status') {
         const status = getLocalServicesStatus ? await getLocalServicesStatus() : { ok: false };
         sendJson(response, 200, { ok: true, status });
+        return;
+      }
+
+      if (request.method === 'GET' && url.pathname === '/desktop/codex/status') {
+        sendJson(response, 200, getCodexStatus(rootDir, getServiceEnv ? getServiceEnv() : {}));
         return;
       }
 
@@ -621,6 +1076,20 @@ function createControlHandler({ app, shell, rootDir, log, ensureLocalServices, g
         return;
       }
 
+      if (request.method === 'POST' && url.pathname === '/desktop/codex/task') {
+        const result = await runCodexTask({
+          app,
+          rootDir,
+          log,
+          ensureLocalServices,
+          getLocalServicesStatus,
+          getServiceEnv,
+          body,
+        });
+        sendJson(response, 200, result);
+        return;
+      }
+
       sendJson(response, 404, { ok: false, error: 'Not found' });
     } catch (error) {
       const message = error && error.message ? error.message : String(error);
@@ -630,7 +1099,7 @@ function createControlHandler({ app, shell, rootDir, log, ensureLocalServices, g
   };
 }
 
-function startControlServer({ app, shell, rootDir, log, ensureLocalServices, getLocalServicesStatus }) {
+function startControlServer({ app, shell, rootDir, log, ensureLocalServices, getLocalServicesStatus, getServiceEnv }) {
   if (controlServer) {
     return Promise.resolve(controlServer.address()?.port || DEFAULT_CONTROL_PORT);
   }
@@ -649,6 +1118,7 @@ function startControlServer({ app, shell, rootDir, log, ensureLocalServices, get
         log,
         ensureLocalServices,
         getLocalServicesStatus,
+        getServiceEnv,
         getPort: () => activePort,
       }));
 
@@ -718,9 +1188,11 @@ function registerProtocolHandler(app, rootDir, log, focusWindow) {
 
 module.exports = {
   homeEnvPath,
+  getCodexStatus,
   previewAgentAssets,
   redactMcpUrl,
   registerProtocolHandler,
+  runCodexTask,
   saveMcpUrl,
   startControlServer,
   testMcpUrl,

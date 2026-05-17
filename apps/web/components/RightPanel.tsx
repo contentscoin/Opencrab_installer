@@ -1,13 +1,15 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import type { AgentAssetResult, DesktopStatus, LocalServicesStatus, OcNode, SourceType } from '../lib/api'
+import type { AgentAssetResult, CodexStatus, CodexTaskResult, DesktopStatus, LocalServicesStatus, OcNode, SourceType } from '../lib/api'
 import {
+  getCodexStatus,
   getDesktopStatus,
   getLocalServicesStatus,
   ingestSource,
   installAgentAssets,
   query,
+  runCodexTask,
   saveDesktopMcpUrl,
   startDesktopOAuth,
   startLocalServices,
@@ -62,10 +64,19 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
   const [agentTarget, setAgentTarget] = useState('both')
   const [agentBusy, setAgentBusy] = useState(false)
   const [agentResults, setAgentResults] = useState<AgentAssetResult[]>([])
+  const [codexStatus, setCodexStatus] = useState<CodexStatus | null>(null)
+  const [codexPrompt, setCodexPrompt] = useState('')
+  const [codexModel, setCodexModel] = useState('gpt-5.5')
+  const [codexReasoning, setCodexReasoning] = useState('high')
+  const [codexPermission, setCodexPermission] = useState('auto')
+  const [codexEnsureServices, setCodexEnsureServices] = useState(true)
+  const [codexBusy, setCodexBusy] = useState(false)
+  const [codexResult, setCodexResult] = useState<CodexTaskResult | null>(null)
 
   useEffect(() => {
     void refreshDesktopStatus()
     void refreshLocalServices()
+    void refreshCodexStatus()
   }, [])
 
   function showToast(msg: string, type: 'success' | 'error' = 'success') {
@@ -85,6 +96,11 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
     } catch {
       setServiceStatus(null)
     }
+  }
+
+  async function refreshCodexStatus() {
+    const status = await getCodexStatus()
+    setCodexStatus(status)
   }
 
   async function handleQuery() {
@@ -173,6 +189,29 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
       showToast(String(error), 'error')
     } finally {
       setAgentBusy(false)
+    }
+  }
+
+  async function handleRunCodexTask() {
+    if (!codexPrompt.trim()) return
+    setCodexBusy(true)
+    setCodexResult(null)
+    try {
+      const result = await runCodexTask({
+        prompt: codexPrompt.trim(),
+        model: codexModel,
+        reasoningEffort: codexReasoning,
+        permissionMode: codexPermission,
+        ensureServices: codexEnsureServices,
+      })
+      setCodexResult(result)
+      showToast('Codex task complete')
+      await refreshCodexStatus()
+      await refreshLocalServices()
+    } catch (error) {
+      showToast(String(error), 'error')
+    } finally {
+      setCodexBusy(false)
     }
   }
 
@@ -466,6 +505,101 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
                     </div>
                   </div>
                 ))}
+              </div>
+            )}
+
+            <hr className="gold-line" style={{ margin: '14px 0' }} />
+
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ fontSize: 10, color: '#555', marginBottom: 4, letterSpacing: '0.06em' }}>CODEX CLI</div>
+              <div style={{ color: codexStatus?.available ? '#8ec07c' : '#fb4934', fontSize: 11, wordBreak: 'break-all' }}>
+                {codexStatus?.available ? codexStatus.version || codexStatus.path : codexStatus?.message || 'checking...'}
+              </div>
+            </div>
+
+            <textarea
+              className="input-dark"
+              value={codexPrompt}
+              onChange={(event) => setCodexPrompt(event.target.value)}
+              placeholder="Ask Codex to create ingest files, inspect Neo4j, or prepare graph work"
+              style={{ marginBottom: 8, height: 96, fontSize: 11 }}
+            />
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 8 }}>
+              <select className="input-dark" value={codexModel} onChange={(event) => setCodexModel(event.target.value)} style={{ fontSize: 11 }}>
+                <option value="gpt-5.5">gpt-5.5</option>
+                <option value="gpt-5.4">gpt-5.4</option>
+                <option value="gpt-5.4-mini">gpt-5.4-mini</option>
+                <option value="gpt-5.3-codex">gpt-5.3-codex</option>
+              </select>
+              <select
+                className="input-dark"
+                value={codexReasoning}
+                onChange={(event) => setCodexReasoning(event.target.value)}
+                style={{ fontSize: 11 }}
+              >
+                <option value="low">low</option>
+                <option value="medium">medium</option>
+                <option value="high">high</option>
+                <option value="xhigh">xhigh</option>
+              </select>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 6, alignItems: 'center', marginBottom: 8 }}>
+              <select
+                className="input-dark"
+                value={codexPermission}
+                onChange={(event) => setCodexPermission(event.target.value)}
+                style={{ fontSize: 11 }}
+              >
+                <option value="review">review</option>
+                <option value="auto">auto</option>
+                <option value="yolo">yolo</option>
+              </select>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 10, color: '#7c6f64', whiteSpace: 'nowrap' }}>
+                <input
+                  type="checkbox"
+                  checked={codexEnsureServices}
+                  onChange={(event) => setCodexEnsureServices(event.target.checked)}
+                  style={{ accentColor: '#f8c537' }}
+                />
+                Neo4j
+              </label>
+            </div>
+
+            <button
+              className="btn-gold"
+              style={{ width: '100%', marginBottom: 10 }}
+              onClick={handleRunCodexTask}
+              disabled={codexBusy || !codexPrompt.trim() || !codexStatus?.available}
+            >
+              {codexBusy ? 'Running Codex...' : 'Run Codex Task'}
+            </button>
+
+            {codexResult && (
+              <div
+                style={{
+                  padding: '8px 9px',
+                  background: '#1f1f1f',
+                  borderRadius: 4,
+                  border: '1px solid #2e2e2e',
+                  fontSize: 10,
+                }}
+              >
+                <div style={{ color: '#f8c537', marginBottom: 4 }}>Task {codexResult.taskId}</div>
+                <div className="mono" style={{ color: '#7c6f64', wordBreak: 'break-all', marginBottom: 6 }}>
+                  {codexResult.taskFile}
+                </div>
+                {codexResult.progress.slice(-5).map((line, index) => (
+                  <div key={`${line}-${index}`} style={{ color: '#bdae93', marginBottom: 3 }}>
+                    {line}
+                  </div>
+                ))}
+                {codexResult.finalMessage && (
+                  <div style={{ color: '#faf2d6', whiteSpace: 'pre-wrap', marginTop: 6 }}>
+                    {codexResult.finalMessage.slice(0, 1200)}
+                  </div>
+                )}
               </div>
             )}
           </div>

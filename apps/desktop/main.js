@@ -945,6 +945,7 @@ async function startServices() {
     log,
     ensureLocalServices,
     getLocalServicesStatus: () => getLocalServicesStatus(activeServiceEnv),
+    getServiceEnv: () => activeServiceEnv || buildServiceEnv(),
   });
   activeServiceEnv.NEXT_PUBLIC_DESKTOP_CONTROL_URL = `http://127.0.0.1:${controlPort}`;
 

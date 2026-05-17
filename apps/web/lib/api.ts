@@ -45,6 +45,28 @@ export interface AgentAssetResult {
   status?: string
 }
 
+export interface CodexStatus {
+  ok: boolean
+  available: boolean
+  path: string
+  version: string
+  message: string
+}
+
+export interface CodexTaskResult {
+  ok: boolean
+  taskId: string
+  taskFile: string
+  outputFile: string
+  cwd: string
+  codexPath: string
+  model: string
+  reasoningEffort: string
+  permissionMode: string
+  progress: string[]
+  finalMessage: string
+}
+
 export interface LocalServicesStatus {
   ok: boolean
   api?: {
@@ -222,4 +244,35 @@ export async function installAgentAssets(target: string): Promise<AgentAssetResu
     throw new Error(data.error || 'Failed to install agent assets')
   }
   return data.results ?? []
+}
+
+export async function getCodexStatus(): Promise<CodexStatus> {
+  try {
+    const r = await fetch(`${DESKTOP_BASE}/desktop/codex/status`, { cache: 'no-store' })
+    if (!r.ok) {
+      return { ok: false, available: false, path: '', version: '', message: 'Codex status unavailable' }
+    }
+    return r.json()
+  } catch {
+    return { ok: false, available: false, path: '', version: '', message: 'Desktop control server unavailable' }
+  }
+}
+
+export async function runCodexTask(input: {
+  prompt: string
+  model?: string
+  reasoningEffort?: string
+  permissionMode?: string
+  ensureServices?: boolean
+}): Promise<CodexTaskResult> {
+  const r = await fetch(`${DESKTOP_BASE}/desktop/codex/task`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+  const data = await r.json().catch(() => ({}))
+  if (!r.ok || data.ok === false) {
+    throw new Error(data.error || 'Codex task failed')
+  }
+  return data
 }

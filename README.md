@@ -23,6 +23,7 @@ Added desktop pieces:
 - Desktop status/control HTTP server on `127.0.0.1:18273`
 - OpenCrab MCP URL registration flow for `opencrab.sh`
 - Codex skill/plugin asset generation for OpenCrab MCP usage
+- Codex CLI task runner for Neo4j/ingest work, inspired by [Codexian](https://github.com/reallygood83/codexian)
 - Initial seed/ingest bootstrap for local graph data
 - Loading/error screen so startup progress is visible instead of a blank window
 - Runtime supervisor that restarts local services if FastAPI, Next.js, or optional MCP helpers stop
@@ -112,6 +113,34 @@ The desktop integration can install OpenCrab assets for Codex-style agent enviro
 
 After installing those assets, restart Codex or start a fresh Codex session so the skill/plugin list can reload.
 
+## Codex Task Runner
+
+The Agent tab can also run local Codex CLI tasks against the OpenCrab workspace. This follows the same core pattern as Codexian: detect the authenticated Codex CLI, create a task context file, run `codex exec`, then read the final response from Codex.
+
+Recommended local setup:
+
+```bash
+npm install -g @openai/codex
+codex login
+```
+
+Task context files are written to the desktop app's user data directory under `codex-tasks`. For packaged installs, Codex writes generated ingest files under the writable `codex-workspace/opencrab_data/ingest` directory. In development mode, the repository root is used as the Codex workspace.
+
+When `Neo4j` is checked in the Agent tab, OpenCrab Desktop starts the local Neo4j/data-service stack before invoking Codex and passes these environment variables to the Codex process:
+
+- `NEO4J_URI`
+- `NEO4J_USER`
+- `NEO4J_PASSWORD`
+- `OPENCRAB_MCP_URL`
+- `OPENCRAB_MCP_API_KEY`
+- `OPENCRAB_CODEX_TASK_FILE`
+
+The task file redacts OpenCrab MCP tokens, but the child Codex process receives the real endpoint through environment variables so it can use the configured MCP bridge.
+
+## Signing And Notarization
+
+Release signing is documented in [docs/signing-notarization.md](docs/signing-notarization.md).
+
 ## Developer Commands
 
 Build the web app:
@@ -161,6 +190,12 @@ apps\desktop\dist\win-unpacked\OpenCrab.exe
 - Adds macOS runtime support for the bundled Python virtual environment path.
 - Adds macOS Electron Builder targets for DMG and ZIP outputs.
 - Adds a GitHub Actions workflow that builds Intel and Apple Silicon macOS release assets on a macOS runner and uploads them to a release tag.
+
+### v1.0.3
+
+- Adds a Codex CLI task runner in the desktop control server and Agent tab.
+- Adds Codexian-style Codex CLI discovery, Windows `codex.cmd` handling, task context files, and final-message capture.
+- Adds signing and notarization guidance for macOS and Windows releases.
 
 ## Attribution
 
