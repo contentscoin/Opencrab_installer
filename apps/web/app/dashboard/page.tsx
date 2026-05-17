@@ -24,6 +24,8 @@ export default function DashboardPage() {
   const [edges, setEdges] = useState<OcEdge[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [connected, setConnected] = useState(false)
+  const [workspaceTab, setWorkspaceTab] = useState<'graph' | 'cloud'>('graph')
+  const [cloudFrameKey, setCloudFrameKey] = useState(0)
   const [controls, setControls] = useState<GraphControls>({
     nodeSize: 1,
     linkStrength: 0.3,
@@ -111,60 +113,111 @@ export default function DashboardPage() {
         >
           <span style={{ fontSize: 12, color: '#555' }}>Graph View</span>
           <span style={{ fontSize: 11, color: '#3a3a3a' }}>|</span>
+          <button
+            className={`tab ${workspaceTab === 'graph' ? 'active' : ''}`}
+            onClick={() => setWorkspaceTab('graph')}
+            style={{ fontSize: 11, padding: '4px 8px', borderBottomWidth: 1 }}
+          >
+            Local
+          </button>
+          <button
+            className={`tab ${workspaceTab === 'cloud' ? 'active' : ''}`}
+            onClick={() => setWorkspaceTab('cloud')}
+            style={{ fontSize: 11, padding: '4px 8px', borderBottomWidth: 1 }}
+          >
+            opencrab.sh
+          </button>
+          <span style={{ fontSize: 11, color: '#3a3a3a' }}>|</span>
           <span style={{ fontSize: 11, color: '#7c6f64' }}>
-            {nodes.length} nodes / {edges.length} edges
+            {workspaceTab === 'graph' ? `${nodes.length} nodes / ${edges.length} edges` : 'cloud workspace'}
           </span>
           <div style={{ flex: 1 }} />
-          <input
-            className="input-dark"
-            value={controls.searchTerm}
-            onChange={(event) => handleControlChange({ searchTerm: event.target.value })}
-            placeholder="Search nodes"
-            style={{ width: 180, fontSize: 11, padding: '4px 10px' }}
-          />
-          <button className="btn-gold" style={{ fontSize: 11, padding: '4px 10px' }} onClick={fetchData}>
-            Refresh
-          </button>
+          {workspaceTab === 'graph' ? (
+            <>
+              <input
+                className="input-dark"
+                value={controls.searchTerm}
+                onChange={(event) => handleControlChange({ searchTerm: event.target.value })}
+                placeholder="Search nodes"
+                style={{ width: 180, fontSize: 11, padding: '4px 10px' }}
+              />
+              <button className="btn-gold" style={{ fontSize: 11, padding: '4px 10px' }} onClick={fetchData}>
+                Refresh
+              </button>
+            </>
+          ) : (
+            <>
+              <button className="btn-gold" style={{ fontSize: 11, padding: '4px 10px' }} onClick={() => setCloudFrameKey((value) => value + 1)}>
+                Reload
+              </button>
+              <a
+                className="btn-gold"
+                href="https://opencrab.sh"
+                target="_blank"
+                rel="noreferrer"
+                style={{ fontSize: 11, padding: '4px 10px', textDecoration: 'none' }}
+              >
+                Open
+              </a>
+            </>
+          )}
         </div>
 
         <div style={{ position: 'absolute', inset: 0, paddingTop: 42 }}>
-          <GraphView
-            nodes={nodes}
-            edges={edges}
-            selectedId={selectedId}
-            searchTerm={controls.searchTerm}
-            nodeSize={controls.nodeSize}
-            linkStrength={controls.linkStrength}
-            centerForce={controls.centerForce}
-            repelForce={controls.repelForce}
-            onNodeClick={handleNodeClick}
-          />
+          {workspaceTab === 'graph' ? (
+            <GraphView
+              nodes={nodes}
+              edges={edges}
+              selectedId={selectedId}
+              searchTerm={controls.searchTerm}
+              nodeSize={controls.nodeSize}
+              linkStrength={controls.linkStrength}
+              centerForce={controls.centerForce}
+              repelForce={controls.repelForce}
+              onNodeClick={handleNodeClick}
+            />
+          ) : (
+            <iframe
+              key={cloudFrameKey}
+              src="https://opencrab.sh"
+              title="opencrab.sh"
+              referrerPolicy="no-referrer-when-downgrade"
+              style={{
+                width: '100%',
+                height: '100%',
+                border: 'none',
+                background: '#fff',
+              }}
+            />
+          )}
         </div>
 
-        <div
-          style={{
-            position: 'absolute',
-            top: 50,
-            right: 10,
-            zIndex: 10,
-            background: 'rgba(17,17,17,0.85)',
-            border: '1px solid rgba(248,197,55,0.15)',
-            borderRadius: 6,
-            padding: '8px 12px',
-          }}
-        >
-          {[
-            ['Landscape', '#5ea85b'],
-            ['AI', '#e38b2c'],
-            ['Alex', '#d97ab5'],
-            ['Fallback', '#7c6f64'],
-          ].map(([label, color]) => (
-            <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
-              <div style={{ width: 8, height: 8, borderRadius: '50%', background: color }} />
-              <span style={{ fontSize: 10, color: '#bdae93' }}>{label}</span>
-            </div>
-          ))}
-        </div>
+        {workspaceTab === 'graph' && (
+          <div
+            style={{
+              position: 'absolute',
+              top: 50,
+              right: 10,
+              zIndex: 10,
+              background: 'rgba(17,17,17,0.85)',
+              border: '1px solid rgba(248,197,55,0.15)',
+              borderRadius: 6,
+              padding: '8px 12px',
+            }}
+          >
+            {[
+              ['Landscape', '#5ea85b'],
+              ['AI', '#e38b2c'],
+              ['Alex', '#d97ab5'],
+              ['Fallback', '#7c6f64'],
+            ].map(([label, color]) => (
+              <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
+                <div style={{ width: 8, height: 8, borderRadius: '50%', background: color }} />
+                <span style={{ fontSize: 10, color: '#bdae93' }}>{label}</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       <RightPanel

@@ -1,14 +1,18 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import type { AgentAssetResult, CodexStatus, CodexTaskResult, DesktopStatus, LocalServicesStatus, OcNode, SourceType } from '../lib/api'
+import type { AgentAssetResult, CodexStatus, CodexTaskResult, DesktopStatus, LocalServicesStatus, OcNode, SourceType, UpdateStatus } from '../lib/api'
 import {
+  checkDesktopUpdate,
   getCodexStatus,
   getDesktopStatus,
   getLocalServicesStatus,
   ingestSource,
   installAgentAssets,
+  openDesktopRelease,
   query,
+  restartLocalServices,
+  restartWebUi,
   runCodexTask,
   saveDesktopMcpUrl,
   startDesktopOAuth,
@@ -46,7 +50,7 @@ interface Props {
 }
 
 export default function RightPanel({ selectedNode, controls, onControlChange, apiKey, onRefresh }: Props) {
-  const [tab, setTab] = useState<'detail' | 'query' | 'ingest' | 'agent'>('detail')
+  const [tab, setTab] = useState<'detail' | 'query' | 'ingest' | 'agent' | 'ops'>('detail')
   const [queryText, setQueryText] = useState('')
   const [queryResults, setQueryResults] = useState<{ node_id: string | null; score?: number; text?: string | null }[]>([])
   const [querying, setQuerying] = useState(false)
@@ -72,6 +76,8 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
   const [codexEnsureServices, setCodexEnsureServices] = useState(true)
   const [codexBusy, setCodexBusy] = useState(false)
   const [codexResult, setCodexResult] = useState<CodexTaskResult | null>(null)
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null)
+  const [opsBusy, setOpsBusy] = useState(false)
 
   useEffect(() => {
     void refreshDesktopStatus()
@@ -217,6 +223,57 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
     }
   }
 
+  async function handleCheckUpdate() {
+    setOpsBusy(true)
+    try {
+      const status = await checkDesktopUpdate()
+      setUpdateStatus(status)
+      showToast(status.hasUpdate ? `Update available: ${status.latestVersion}` : 'OpenCrab is up to date')
+    } catch (error) {
+      showToast(String(error), 'error')
+    } finally {
+      setOpsBusy(false)
+    }
+  }
+
+  async function handleOpenRelease() {
+    setOpsBusy(true)
+    try {
+      await openDesktopRelease(updateStatus?.releaseUrl)
+      showToast('Release page opened')
+    } catch (error) {
+      showToast(String(error), 'error')
+    } finally {
+      setOpsBusy(false)
+    }
+  }
+
+  async function handleRestartServices() {
+    setOpsBusy(true)
+    try {
+      const status = await restartLocalServices({ includeData: true, includeApi: true, includeMcp: true })
+      setServiceStatus(status)
+      showToast('Local services restarted')
+      onRefresh()
+    } catch (error) {
+      showToast(String(error), 'error')
+    } finally {
+      setOpsBusy(false)
+    }
+  }
+
+  async function handleRestartWebUi() {
+    setOpsBusy(true)
+    try {
+      await restartWebUi()
+      showToast('Web UI restarted')
+      setTimeout(() => window.location.reload(), 1000)
+    } catch (error) {
+      showToast(String(error), 'error')
+      setOpsBusy(false)
+    }
+  }
+
   function toggleSpace(space: string) {
     const hidden = controls.hiddenSpaces
     onControlChange({
@@ -258,14 +315,14 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
       }}
     >
       <div style={{ display: 'flex', borderBottom: '1px solid rgba(248,197,55,0.15)' }}>
-        {(['detail', 'query', 'ingest', 'agent'] as const).map((item) => (
+        {(['detail', 'query', 'ingest', 'agent', 'ops'] as const).map((item) => (
           <button
             key={item}
             className={`tab ${tab === item ? 'active' : ''}`}
             onClick={() => setTab(item)}
             style={{ flex: 1, fontSize: 11 }}
           >
-            {item === 'detail' ? 'Node' : item === 'query' ? 'Query' : item === 'ingest' ? 'Ingest' : 'Agent'}
+            {item === 'detail' ? 'Node' : item === 'query' ? 'Query' : item === 'ingest' ? 'Ingest' : item === 'agent' ? 'Agent' : 'Ops'}
           </button>
         ))}
       </div>
@@ -604,6 +661,85 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
                 )}
               </div>
             )}
+          </div>
+        )}
+
+        {tab === 'ops' && (
+          <div>
+            <div
+              style={{
+                border: '1px solid #2e2e2e',
+                borderRadius: 4,
+                padding: 8,
+                marginBottom: 10,
+                fontSize: 11,
+                color: '#bdae93',
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 6 }}>
+                <span style={{ color: serviceStatus?.ok ? '#8ec07c' : '#fb4934' }}>
+                  Local stack {serviceStatus?.ok ? 'healthy' : 'needs attention'}
+                </span>
+                <button className="btn-gold" style={{ fontSize: 10, padding: '3px 7px' }} onClick={refreshLocalServices} disabled={opsBusy}>
+                  Refresh
+                </button>
+              </div>
+              <div className="mono" style={{ color: '#7c6f64', wordBreak: 'break-all', marginBottom: 4 }}>
+                API {serviceStatus?.api?.status ?? 'n/a'} / {serviceStatus?.neo4j?.boltUrl ?? 'bolt://localhost:7688'}
+              </div>
+              {serviceStatus?.containers &&
+                Object.entries(serviceStatus.containers).map(([name, container]) => (
+                  <div key={name} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginTop: 4 }}>
+                    <span>{name}</span>
+                    <span style={{ color: container.running && container.healthy ? '#8ec07c' : '#fb4934' }}>
+                      {container.status}
+                    </span>
+                  </div>
+                ))}
+            </div>
+
+            <button className="btn-gold" style={{ width: '100%', marginBottom: 8 }} onClick={handleStartServices} disabled={opsBusy || startingServices}>
+              {startingServices ? 'Starting...' : 'Start Services'}
+            </button>
+            <button className="btn-gold" style={{ width: '100%', marginBottom: 8 }} onClick={handleRestartServices} disabled={opsBusy}>
+              {opsBusy ? 'Working...' : 'Restart Graph Services'}
+            </button>
+            <button className="btn-gold" style={{ width: '100%', marginBottom: 14 }} onClick={handleRestartWebUi} disabled={opsBusy}>
+              Restart Web UI
+            </button>
+
+            <div
+              style={{
+                border: '1px solid #2e2e2e',
+                borderRadius: 4,
+                padding: 8,
+                marginBottom: 10,
+                fontSize: 11,
+                color: '#bdae93',
+              }}
+            >
+              <div style={{ fontSize: 10, color: '#555', marginBottom: 4, letterSpacing: '0.06em' }}>UPDATES</div>
+              <div style={{ color: updateStatus?.hasUpdate ? '#f8c537' : '#8ec07c', marginBottom: 4 }}>
+                {updateStatus
+                  ? updateStatus.hasUpdate
+                    ? `OpenCrab ${updateStatus.latestVersion} available`
+                    : `Current ${updateStatus.currentVersion}`
+                  : 'Not checked'}
+              </div>
+              {updateStatus?.publishedAt && (
+                <div className="mono" style={{ color: '#7c6f64', wordBreak: 'break-all' }}>
+                  {new Date(updateStatus.publishedAt).toLocaleString()}
+                </div>
+              )}
+              {updateStatus?.error && <div style={{ color: '#fb4934', marginTop: 4 }}>{updateStatus.error}</div>}
+            </div>
+
+            <button className="btn-gold" style={{ width: '100%', marginBottom: 8 }} onClick={handleCheckUpdate} disabled={opsBusy}>
+              Check For Updates
+            </button>
+            <button className="btn-gold" style={{ width: '100%' }} onClick={handleOpenRelease} disabled={opsBusy}>
+              Open Release Page
+            </button>
           </div>
         )}
 

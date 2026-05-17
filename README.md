@@ -28,6 +28,8 @@ Added desktop pieces:
 - Loading/error screen so startup progress is visible instead of a blank window
 - Runtime supervisor that restarts local services if FastAPI, Next.js, or optional MCP helpers stop
 - GitHub Release update notification prompt for newer installer versions
+- Dashboard `Ops` tab for manual service start/restart, web UI restart, and update checks
+- Dashboard `opencrab.sh` tab for opening the cloud OpenCrab page inside the desktop workspace
 
 ## Download
 
@@ -85,6 +87,12 @@ OpenCrab local app endpoints:
 - API status: `http://127.0.0.1:8080/api/status`
 - Desktop status: `http://127.0.0.1:18273/desktop/status`
 - Local service status: `http://127.0.0.1:18273/desktop/services/status`
+
+Desktop dashboard controls:
+
+- `Local` tab: shows the local graph workspace.
+- `opencrab.sh` tab: opens the cloud OpenCrab page in the desktop workspace, with a fallback button to open it in the system browser.
+- `Ops` tab: checks local service health, starts services, restarts graph services, restarts the web UI, checks GitHub Releases for updates, and opens the latest release page.
 
 ## opencrab.sh Integration
 
@@ -204,6 +212,12 @@ apps\desktop\dist\win-unpacked\OpenCrab.exe
 - Speeds up Windows installation by deferring Docker/Neo4j/data-service bootstrap from NSIS install time to first app launch.
 - Opens the dashboard as soon as the web UI is ready while local graph services warm up in the background.
 - Keeps an opt-in `OPENCRAB_RUN_INSTALL_BOOTSTRAP=1` path for managed installs that still want bootstrap during installation.
+
+### v1.0.5
+
+- Adds a dashboard `Ops` tab for checking updates, opening the release page, starting services, restarting graph services, and restarting the web UI.
+- Adds desktop control API routes for manual update checks and restart actions.
+- Adds a dashboard `opencrab.sh` tab so the cloud OpenCrab page is visible next to the local graph workspace.
 
 ## Attribution
 

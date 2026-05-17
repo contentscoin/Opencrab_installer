@@ -89,6 +89,22 @@ export interface LocalServicesStatus {
   }
 }
 
+export interface UpdateStatus {
+  ok: boolean
+  currentVersion: string
+  latestVersion: string
+  hasUpdate: boolean
+  releaseUrl: string
+  releaseName?: string
+  publishedAt?: string
+  error?: string
+  assets?: Array<{
+    name: string
+    size: number
+    downloadUrl: string
+  }>
+}
+
 export async function getStatus(): Promise<{ ok: boolean; version?: string; vectorCount?: number }> {
   try {
     const r = await fetch(`${BASE}/api/status`, { cache: 'no-store' })
@@ -166,6 +182,37 @@ export async function startLocalServices(): Promise<LocalServicesStatus> {
   return data.status
 }
 
+export async function restartLocalServices(input: {
+  includeData?: boolean
+  includeApi?: boolean
+  includeMcp?: boolean
+  includeWeb?: boolean
+} = {}): Promise<LocalServicesStatus> {
+  const r = await fetch(`${DESKTOP_BASE}/desktop/services/restart`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+  const data = await r.json().catch(() => ({}))
+  if (!r.ok || data.ok === false || data.status?.ok === false) {
+    throw new Error(data.error || 'Failed to restart local services')
+  }
+  return data.status
+}
+
+export async function restartWebUi(): Promise<{ ok: boolean; url: string }> {
+  const r = await fetch(`${DESKTOP_BASE}/desktop/web/restart`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  })
+  const data = await r.json().catch(() => ({}))
+  if (!r.ok || data.ok === false) {
+    throw new Error(data.error || 'Failed to restart web UI')
+  }
+  return data.status
+}
+
 export async function getLocalServicesStatus(): Promise<LocalServicesStatus> {
   const r = await fetch(`${DESKTOP_BASE}/desktop/services/status`, { cache: 'no-store' })
   const data = await r.json().catch(() => ({}))
@@ -173,6 +220,28 @@ export async function getLocalServicesStatus(): Promise<LocalServicesStatus> {
     throw new Error(data.error || 'Failed to read local service status')
   }
   return data.status
+}
+
+export async function checkDesktopUpdate(): Promise<UpdateStatus> {
+  const r = await fetch(`${DESKTOP_BASE}/desktop/update/check`, { cache: 'no-store' })
+  const data = await r.json().catch(() => ({}))
+  if (!r.ok || data.ok === false) {
+    throw new Error(data.error || 'Failed to check for updates')
+  }
+  return data
+}
+
+export async function openDesktopRelease(url?: string): Promise<{ ok: boolean; url?: string }> {
+  const r = await fetch(`${DESKTOP_BASE}/desktop/update/open`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url }),
+  })
+  const data = await r.json().catch(() => ({}))
+  if (!r.ok || data.ok === false) {
+    throw new Error(data.error || 'Failed to open release page')
+  }
+  return data
 }
 
 export async function getNodes(apiKey: string): Promise<OcNode[]> {

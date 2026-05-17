@@ -1007,7 +1007,20 @@ function readJsonBody(request) {
   });
 }
 
-function createControlHandler({ app, shell, rootDir, log, ensureLocalServices, getLocalServicesStatus, getServiceEnv, getPort }) {
+function createControlHandler({
+  app,
+  shell,
+  rootDir,
+  log,
+  ensureLocalServices,
+  getLocalServicesStatus,
+  getServiceEnv,
+  restartLocalServices,
+  restartWebUi,
+  checkForUpdates,
+  openReleasePage,
+  getPort,
+}) {
   return async (request, response) => {
     if (request.method === 'OPTIONS') {
       sendJson(response, 200, { ok: true });
@@ -1043,6 +1056,12 @@ function createControlHandler({ app, shell, rootDir, log, ensureLocalServices, g
         return;
       }
 
+      if (request.method === 'GET' && url.pathname === '/desktop/update/check') {
+        const status = checkForUpdates ? await checkForUpdates() : { ok: false, error: 'Update checker is not available.' };
+        sendJson(response, status.ok === false ? 500 : 200, status);
+        return;
+      }
+
       if (request.method === 'GET' && url.pathname === '/desktop/oauth/callback') {
         const result = await handleOAuthCallback(app, rootDir, url.toString());
         sendJson(response, 200, { ok: true, mcpUrl: redactMcpUrl(result.url), tools: result.tools.length });
@@ -1067,6 +1086,39 @@ function createControlHandler({ app, shell, rootDir, log, ensureLocalServices, g
       if (request.method === 'POST' && url.pathname === '/desktop/services/start') {
         const status = ensureLocalServices ? await ensureLocalServices() : { ok: false };
         sendJson(response, 200, { ok: true, status });
+        return;
+      }
+
+      if (request.method === 'POST' && url.pathname === '/desktop/services/restart') {
+        if (!restartLocalServices) {
+          sendJson(response, 500, { ok: false, error: 'Service restart is not available.' });
+          return;
+        }
+        const status = await restartLocalServices({
+          includeData: body.includeData !== false,
+          includeApi: body.includeApi !== false,
+          includeMcp: body.includeMcp !== false,
+          includeWeb: body.includeWeb === true,
+        });
+        sendJson(response, 200, { ok: true, status });
+        return;
+      }
+
+      if (request.method === 'POST' && url.pathname === '/desktop/web/restart') {
+        if (!restartWebUi) {
+          sendJson(response, 500, { ok: false, error: 'Web UI restart is not available.' });
+          return;
+        }
+        const status = await restartWebUi();
+        sendJson(response, 200, { ok: true, status });
+        return;
+      }
+
+      if (request.method === 'POST' && url.pathname === '/desktop/update/open') {
+        const result = openReleasePage
+          ? await openReleasePage(String(body.url || ''))
+          : await shell.openExternal(String(body.url || 'https://github.com/contentscoin/Opencrab_installer/releases/latest')).then(() => ({ ok: true }));
+        sendJson(response, 200, result);
         return;
       }
 
@@ -1099,7 +1151,19 @@ function createControlHandler({ app, shell, rootDir, log, ensureLocalServices, g
   };
 }
 
-function startControlServer({ app, shell, rootDir, log, ensureLocalServices, getLocalServicesStatus, getServiceEnv }) {
+function startControlServer({
+  app,
+  shell,
+  rootDir,
+  log,
+  ensureLocalServices,
+  getLocalServicesStatus,
+  getServiceEnv,
+  restartLocalServices,
+  restartWebUi,
+  checkForUpdates,
+  openReleasePage,
+}) {
   if (controlServer) {
     return Promise.resolve(controlServer.address()?.port || DEFAULT_CONTROL_PORT);
   }
@@ -1119,6 +1183,10 @@ function startControlServer({ app, shell, rootDir, log, ensureLocalServices, get
         ensureLocalServices,
         getLocalServicesStatus,
         getServiceEnv,
+        restartLocalServices,
+        restartWebUi,
+        checkForUpdates,
+        openReleasePage,
         getPort: () => activePort,
       }));
 

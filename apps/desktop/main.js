@@ -766,6 +766,77 @@ async function ensureLocalServices() {
   return ensureLocalServicesPromise;
 }
 
+async function stopManagedService(serviceKey) {
+  const entry = managedServices.get(serviceKey);
+  if (!entry?.proc || !entry.proc.pid) {
+    managedServices.delete(serviceKey);
+    return;
+  }
+
+  managedServices.set(serviceKey, { ...entry, restart: false });
+  log('Supervisor', `stopping ${entry.name}`);
+  await new Promise((resolve) => {
+    try {
+      treeKill(entry.proc.pid, 'SIGKILL', () => resolve());
+    } catch {
+      resolve();
+    }
+  });
+  managedServices.delete(serviceKey);
+}
+
+async function restartLocalRuntime(options = {}) {
+  const rootDir = getRootDir();
+  if (!activeServiceEnv) {
+    loadEnvFile(userEnvPath(app));
+    loadEnvFile(path.join(rootDir, '.env.local'));
+    activeServiceEnv = buildServiceEnv();
+  }
+
+  const includeData = options.includeData !== false;
+  const includeApi = options.includeApi !== false;
+  const includeMcp = options.includeMcp !== false;
+  const includeWeb = options.includeWeb === true;
+
+  log('Local Services', `restart requested data=${includeData} api=${includeApi} mcp=${includeMcp} web=${includeWeb}`);
+
+  if (includeApi) await stopManagedService('fastapi');
+  if (includeMcp) await stopManagedService('neo4j-mcp');
+  if (includeWeb) await stopManagedService('next');
+
+  if (includeData) {
+    try {
+      await runOnce('docker', ['compose', 'restart', ...DATA_SERVICES], { cwd: rootDir, env: activeServiceEnv }, 'Docker Compose');
+    } catch (error) {
+      log('Docker Compose', `docker compose restart failed; falling back to up -d: ${error.message}`);
+    }
+    await startDockerServices(rootDir, activeServiceEnv);
+  }
+
+  if (includeApi) await startFastApi(rootDir, activeServiceEnv);
+  if (includeMcp) {
+    await startNeo4jMcpServer(rootDir, activeServiceEnv);
+    try {
+      await checkMcpIntegration(activeServiceEnv);
+    } catch (error) {
+      log('OpenCrab MCP ERR', error && error.message ? error.message : String(error));
+    }
+  }
+  if (includeWeb) await startNext(rootDir, activeServiceEnv);
+
+  return getLocalServicesStatus(activeServiceEnv);
+}
+
+async function restartWebUi() {
+  const rootDir = getRootDir();
+  if (!activeServiceEnv) {
+    activeServiceEnv = buildServiceEnv();
+  }
+  await stopManagedService('next');
+  await startNext(rootDir, activeServiceEnv);
+  return { ok: await isWebHealthy(), url: WEB_URL };
+}
+
 async function startNext(rootDir, env) {
   if (await isWebHealthy()) {
     log('Next.js', 'already healthy');
@@ -959,6 +1030,10 @@ async function startServices() {
     ensureLocalServices,
     getLocalServicesStatus: () => getLocalServicesStatus(activeServiceEnv),
     getServiceEnv: () => activeServiceEnv || buildServiceEnv(),
+    restartLocalServices: restartLocalRuntime,
+    restartWebUi,
+    checkForUpdates: () => checkForUpdates(false),
+    openReleasePage,
   });
   activeServiceEnv.NEXT_PUBLIC_DESKTOP_CONTROL_URL = `http://127.0.0.1:${controlPort}`;
 
@@ -1013,49 +1088,78 @@ function compareVersions(left, right) {
   return 0;
 }
 
+async function getUpdateStatus() {
+  const response = await fetchWithTimeout(UPDATE_RELEASE_API_URL, 10000, {
+    headers: {
+      Accept: 'application/vnd.github+json',
+      'User-Agent': `OpenCrab Desktop/${app.getVersion()}`,
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`GitHub release check failed: ${response.status} ${response.statusText}`);
+  }
+
+  const release = await response.json();
+  const latestVersion = String(release.tag_name || release.name || '').replace(/^v/i, '');
+  const currentVersion = app.getVersion();
+  const releaseUrl = release.html_url || UPDATE_RELEASE_PAGE_URL;
+
+  return {
+    ok: true,
+    currentVersion,
+    latestVersion,
+    hasUpdate: Boolean(latestVersion && compareVersions(latestVersion, currentVersion) > 0),
+    releaseUrl,
+    releaseName: release.name || release.tag_name || '',
+    publishedAt: release.published_at || '',
+    assets: Array.isArray(release.assets)
+      ? release.assets.map((asset) => ({
+          name: asset.name,
+          size: asset.size,
+          downloadUrl: asset.browser_download_url,
+        }))
+      : [],
+  };
+}
+
+async function openReleasePage(url = UPDATE_RELEASE_PAGE_URL) {
+  const target = url || UPDATE_RELEASE_PAGE_URL;
+  await shell.openExternal(target);
+  return { ok: true, url: target };
+}
+
 async function checkForUpdates(showNoUpdate = false) {
   try {
-    const response = await fetchWithTimeout(UPDATE_RELEASE_API_URL, 10000, {
-      headers: {
-        Accept: 'application/vnd.github+json',
-        'User-Agent': `OpenCrab Desktop/${app.getVersion()}`,
-      },
-    });
+    const status = await getUpdateStatus();
 
-    if (!response.ok) {
-      throw new Error(`GitHub release check failed: ${response.status} ${response.statusText}`);
-    }
-
-    const release = await response.json();
-    const latestVersion = String(release.tag_name || release.name || '').replace(/^v/i, '');
-    const currentVersion = app.getVersion();
-
-    if (latestVersion && compareVersions(latestVersion, currentVersion) > 0) {
-      if (lastNotifiedUpdateVersion === latestVersion) {
-        return;
+    if (status.hasUpdate) {
+      if (lastNotifiedUpdateVersion === status.latestVersion && !showNoUpdate) {
+        return status;
       }
-      lastNotifiedUpdateVersion = latestVersion;
-      log('Updater', `new release available: ${latestVersion}`);
+      lastNotifiedUpdateVersion = status.latestVersion;
+      log('Updater', `new release available: ${status.latestVersion}`);
       const result = await dialog.showMessageBox(mainWindow || undefined, {
         type: 'info',
         buttons: ['Download', 'Later'],
         defaultId: 0,
         cancelId: 1,
         title: 'OpenCrab update available',
-        message: `OpenCrab ${latestVersion} is available.`,
-        detail: `Current version: ${currentVersion}\nOpen the release page to download the latest installer.`,
+        message: `OpenCrab ${status.latestVersion} is available.`,
+        detail: `Current version: ${status.currentVersion}\nOpen the release page to download the latest installer.`,
       });
 
       if (result.response === 0) {
-        await shell.openExternal(release.html_url || UPDATE_RELEASE_PAGE_URL);
+        await openReleasePage(status.releaseUrl);
       }
     } else if (showNoUpdate) {
       await dialog.showMessageBox(mainWindow || undefined, {
         type: 'info',
         title: 'OpenCrab is up to date',
-        message: `OpenCrab ${currentVersion} is the latest available version.`,
+        message: `OpenCrab ${status.currentVersion} is the latest available version.`,
       });
     }
+    return status;
   } catch (error) {
     log('Updater ERR', error && error.message ? error.message : String(error));
     if (showNoUpdate) {
@@ -1066,6 +1170,15 @@ async function checkForUpdates(showNoUpdate = false) {
         detail: error && error.message ? error.message : String(error),
       });
     }
+    return {
+      ok: false,
+      currentVersion: app.getVersion(),
+      latestVersion: '',
+      hasUpdate: false,
+      releaseUrl: UPDATE_RELEASE_PAGE_URL,
+      error: error && error.message ? error.message : String(error),
+      assets: [],
+    };
   }
 }
 
