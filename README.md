@@ -32,6 +32,7 @@ Added desktop pieces:
 - Dashboard `opencrab.sh` tab for opening the cloud OpenCrab page inside the desktop workspace
 - Static packaged web UI so installers no longer unpack the full Next.js `node_modules` tree
 - Live Codex CLI task log in the Agent tab, including setup steps, Codex progress, stderr, and final response
+- Bundled `insane-search` research skill/engine for ontology-pack source collection through Codex tasks
 
 ## Download
 
@@ -146,8 +147,13 @@ When `Neo4j` is checked in the Agent tab, OpenCrab Desktop starts the local Neo4
 - `OPENCRAB_MCP_URL`
 - `OPENCRAB_MCP_API_KEY`
 - `OPENCRAB_CODEX_TASK_FILE`
+- `OPENCRAB_PYTHON`
+- `OPENCRAB_RESEARCH_SKILL_DIR`
+- `OPENCRAB_RESEARCH_ENGINE_DIR`
 
 The task file redacts OpenCrab MCP tokens, but the child Codex process receives the real endpoint through environment variables so it can use the configured MCP bridge.
+
+When `Research` is checked in the Agent tab, the task context also points Codex at the bundled `insane-search` skill and Python research engine. Use it for ontology-pack research, source discovery, blocked-page fallback fetching, public evidence collection, and entity/claim/source extraction before writing ingest files. Research outputs should be saved under `codex-workspace/opencrab_data/research` in packaged installs.
 
 ## Signing And Notarization
 
@@ -233,6 +239,15 @@ apps\desktop\dist\win-unpacked\OpenCrab.exe
 - Adds live Agent tab messages for user prompt, setup steps, Codex stdout/stderr progress, errors, and final response.
 - Keeps recent Codex task history in the desktop control server so the UI can continue showing progress while a task is running.
 
+### v1.0.8
+
+- Bundles the `insane-search` skill and Python engine for ontology-pack research workflows.
+- Adds a `Research` toggle to Codex tasks and injects the research skill path, engine path, Python command, and output directory into the task context.
+- Installs the research skill into generated Codex/Claude/project/plugin assets alongside the OpenCrab MCP skill.
+- Packages research runtime dependencies into the bundled Python environment before installer builds.
+
 ## Attribution
 
 OpenCrab itself comes from [AlexAI-MCP/OpenCrab](https://github.com/AlexAI-MCP/OpenCrab). This fork focuses on installer, desktop runtime orchestration, OpenCrab MCP bridge assets, and public release packaging.
+
+The bundled `insane-search` research skill and engine come from [fivetaku/insane-search](https://github.com/fivetaku/insane-search) under the MIT license, included here to support OpenCrab ontology-pack research workflows.

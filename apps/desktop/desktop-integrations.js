@@ -9,6 +9,7 @@ const DEFAULT_CONTROL_PORT = 18273;
 const OAUTH_PROTOCOL = 'opencrab';
 const SERVER_NAME = 'opencrab';
 const SKILL_NAME = 'opencrab-mcp';
+const RESEARCH_SKILL_NAME = 'insane-search';
 const DEFAULT_CODEX_MODEL = 'gpt-5.5';
 const DEFAULT_CODEX_REASONING = 'high';
 const DEFAULT_CODEX_PERMISSION = 'auto';
@@ -275,8 +276,8 @@ function bridgeSource(rootDir) {
   return path.join(rootDir, 'scripts', 'opencrab_mcp_bridge.mjs');
 }
 
-function skillSource(rootDir) {
-  return path.join(rootDir, 'skills', SKILL_NAME);
+function skillSource(rootDir, skillName = SKILL_NAME) {
+  return path.join(rootDir, 'skills', skillName);
 }
 
 function prepareProjectMcp(rootDir) {
@@ -287,9 +288,9 @@ function prepareProjectMcp(rootDir) {
   return targetFile;
 }
 
-function installProjectSkill(rootDir) {
-  const target = path.join(rootDir, '.agents', 'skills', SKILL_NAME);
-  copyDirectory(skillSource(rootDir), target);
+function installProjectSkill(rootDir, skillName = SKILL_NAME) {
+  const target = path.join(rootDir, '.agents', 'skills', skillName);
+  copyDirectory(skillSource(rootDir, skillName), target);
   return target;
 }
 
@@ -334,12 +335,12 @@ function prepareHomeMcp(rootDir) {
   return targetFile;
 }
 
-function installGlobalSkill(rootDir, client) {
+function installGlobalSkill(rootDir, client, skillName = SKILL_NAME) {
   const parent = client === 'claude'
     ? path.join(os.homedir(), '.claude', 'skills')
     : path.join(os.homedir(), '.agents', 'skills');
-  const target = path.join(parent, SKILL_NAME);
-  copyDirectory(skillSource(rootDir), target);
+  const target = path.join(parent, skillName);
+  copyDirectory(skillSource(rootDir, skillName), target);
   return target;
 }
 
@@ -595,6 +596,25 @@ function createCodexTaskFile(app, taskContext) {
   return { taskId, taskFile, content };
 }
 
+function getResearchContext(rootDir, env, enabled = true) {
+  const skillDir = path.join(rootDir, 'skills', RESEARCH_SKILL_NAME);
+  const engineDir = path.join(skillDir, 'engine');
+  const available = Boolean(enabled && fs.existsSync(path.join(skillDir, 'SKILL.md')) && fs.existsSync(path.join(engineDir, '__main__.py')));
+  if (available) {
+    env.OPENCRAB_RESEARCH_SKILL_DIR = skillDir;
+    env.OPENCRAB_RESEARCH_ENGINE_DIR = engineDir;
+    env.PYTHONPATH = [skillDir, env.PYTHONPATH || ''].filter(Boolean).join(path.delimiter);
+  }
+  return {
+    enabled: Boolean(enabled),
+    available,
+    skillName: RESEARCH_SKILL_NAME,
+    skillDir,
+    engineDir,
+    python: env.OPENCRAB_PYTHON || 'python',
+  };
+}
+
 function buildCodexTaskContent({
   task,
   taskId,
@@ -604,11 +624,33 @@ function buildCodexTaskContent({
   serviceStatus,
   serviceEnv,
   mcpUrl,
+  research,
 }) {
   const neo4j = serviceStatus?.neo4j || {};
   const localMcp = 'http://127.0.0.1:8080/mcp';
   const configuredMcp = mcpUrl || serviceEnv.OPENCRAB_MCP_URL || localMcp;
   const ingestDir = path.join(cwd, 'opencrab_data', 'ingest');
+  const researchBlock = research?.available ? `
+## Research Collection
+
+- Research skill: ${research.skillName}
+- Research skill path: ${research.skillDir}
+- Research engine path: ${research.engineDir}
+- Python command: ${research.python}
+- Research runtime dependencies are bundled into packaged releases. If running from a development checkout and the engine reports missing packages, install them with:
+  - ${research.python} -m pip install curl_cffi beautifulsoup4 pyyaml feedparser yt-dlp
+- For ontology pack research, first collect source evidence with the research skill before drafting entities or relationships.
+- For direct URL fetches, run from the research skill directory:
+  - ${research.python} -m engine "<URL>" --json --trace
+- Store useful research outputs under ${path.join(cwd, 'opencrab_data', 'research')}.
+- Convert research into ontology-pack artifacts with explicit source URLs, evidence snippets, claims, entities, relationships, and confidence notes.
+- Do not bypass login-only, private, or paywalled content. Use public pages, public APIs, RSS, metadata, Jina Reader, archive/cache routes, or browser/API discovery only when appropriate.
+` : `
+## Research Collection
+
+- The optional ${RESEARCH_SKILL_NAME} research skill is not available in this installation.
+- Use normal public web/API research and keep clear source URLs and evidence snippets for ontology pack artifacts.
+`;
 
   return `# OpenCrab Codex Task
 
@@ -631,11 +673,13 @@ ${task}
 - Neo4j user: ${neo4j.username || serviceEnv.NEO4J_USER || 'neo4j'}
 - Neo4j password: ${serviceEnv.NEO4J_PASSWORD || 'opencrab'}
 - Default ingest output directory: ${ingestDir}
+${researchBlock}
 
 ## Operating Instructions
 
 - You are Codex running from OpenCrab Desktop, modeled after the Codexian CLI workflow.
 - Use the local OpenCrab services and Neo4j connection when the task involves graph, ontology, or ingest work.
+- When the task asks for ontology pack creation, market/domain research, source discovery, blocked URL reading, Korean web sources, social platforms, media metadata, GitHub/arXiv/StackOverflow, or public evidence gathering, use the Research Collection instructions above.
 - If creating ingest files, put them under the default ingest output directory unless the user explicitly names another path.
 - Prefer structured files such as Markdown, JSONL, CSV, or Cypher with clear source metadata.
 - Use the OpenCrab MCP endpoint through the configured environment variables when useful.
@@ -773,11 +817,20 @@ async function runCodexTaskInBackground({ app, rootDir, log, ensureLocalServices
     env.PATH = mergePath(env.PATH, [path.dirname(codexPath)]);
     const cwd = getCodexWorkspace(app, rootDir, body.cwd);
     fs.mkdirSync(path.join(cwd, 'opencrab_data', 'ingest'), { recursive: true });
+    fs.mkdirSync(path.join(cwd, 'opencrab_data', 'research'), { recursive: true });
 
     const model = normalizeCodexModel(body.model || process.env.OPENCRAB_CODEX_MODEL);
     const reasoning = normalizeCodexReasoning(body.reasoningEffort || process.env.OPENCRAB_CODEX_REASONING);
     const permission = normalizeCodexPermission(body.permissionMode || process.env.OPENCRAB_CODEX_PERMISSION);
     const timeoutMs = normalizeTimeoutMs(body.timeoutMs);
+    const research = getResearchContext(rootDir, env, body.useResearchSkill !== false);
+    appendCodexProgress(
+      task,
+      'system',
+      research.available
+        ? `Research skill enabled: ${RESEARCH_SKILL_NAME}`
+        : `Research skill unavailable: ${RESEARCH_SKILL_NAME}`,
+    );
     const { taskId, taskFile, content } = createCodexTaskFile(app, {
       taskId: task.taskId,
       task: requestText,
@@ -786,6 +839,7 @@ async function runCodexTaskInBackground({ app, rootDir, log, ensureLocalServices
       serviceStatus,
       serviceEnv: env,
       mcpUrl: currentMcpUrl(),
+      research,
     });
     const outputPath = path.join(path.dirname(taskFile), `opencrab-codex-result-${taskId}.md`);
 
@@ -1067,6 +1121,7 @@ function createPlugin(rootDir) {
 
   fs.copyFileSync(bridgeSource(rootDir), path.join(pluginDir, 'mcp', 'opencrab_mcp_bridge.mjs'));
   copyDirectory(skillSource(rootDir), path.join(pluginDir, 'skills', SKILL_NAME));
+  copyDirectory(skillSource(rootDir, RESEARCH_SKILL_NAME), path.join(pluginDir, 'skills', RESEARCH_SKILL_NAME));
 
   fs.writeFileSync(path.join(pluginDir, '.mcp.json'), `${JSON.stringify({
     mcpServers: {
@@ -1080,7 +1135,7 @@ function createPlugin(rootDir) {
   fs.writeFileSync(path.join(manifestDir, 'plugin.json'), `${JSON.stringify({
     name: SERVER_NAME,
     version: '1.0.0',
-    description: 'OpenCrab ontology GraphRAG MCP tools and agent skill.',
+    description: 'OpenCrab ontology GraphRAG MCP tools, agent skill, and research collection skill.',
     author: {
       name: 'OpenCrab',
       email: 'shineyw21@gmail.com',
@@ -1089,13 +1144,13 @@ function createPlugin(rootDir) {
     homepage: 'https://opencrab.sh/',
     repository: 'https://github.com/reallygood83/opencrab',
     license: 'MIT',
-    keywords: ['opencrab', 'mcp', 'ontology', 'graphrag', 'skills'],
+    keywords: ['opencrab', 'mcp', 'ontology', 'graphrag', 'skills', 'research', 'insane-search'],
     skills: './skills/',
     mcpServers: './.mcp.json',
     interface: {
       displayName: 'OpenCrab',
       shortDescription: 'Ontology GraphRAG through your OpenCrab MCP URL',
-      longDescription: 'Connect Codex to OpenCrab ontology graph search, document evidence, marketplace packs, workflows, and text ingest through a configured MCP endpoint.',
+      longDescription: 'Connect Codex to OpenCrab ontology graph search, document evidence, marketplace packs, workflows, text ingest, and resilient web research collection for ontology pack creation.',
       developerName: 'OpenCrab',
       category: 'Productivity',
       capabilities: ['Interactive', 'Write'],
@@ -1104,6 +1159,7 @@ function createPlugin(rootDir) {
       termsOfServiceURL: 'https://opencrab.sh/terms',
       defaultPrompt: [
         'Search my OpenCrab graph for relevant evidence.',
+        'Research public evidence for an ontology pack, then structure entities, claims, relationships, and sources.',
         'Run an OpenCrab workflow for this task.',
         'Ingest this text into OpenCrab.',
       ],
@@ -1132,6 +1188,7 @@ function installAgentAssets(app, rootDir, target = 'project-both') {
     results.push({ label: 'Project MCP bridge', path: serverFile });
     results.push({ label: 'Project Codex config', path: writeCodexProjectConfig(rootDir, serverFile) });
     results.push({ label: 'Project skill', path: installProjectSkill(rootDir) });
+    results.push({ label: 'Project research skill', path: installProjectSkill(rootDir, RESEARCH_SKILL_NAME) });
   }
 
   if (target === 'project-claude' || target === 'project-both') {
@@ -1143,12 +1200,14 @@ function installAgentAssets(app, rootDir, target = 'project-both') {
   if (target === 'codex' || target === 'both') {
     const serverFile = prepareHomeMcp(rootDir);
     results.push({ label: 'Codex skill', path: installGlobalSkill(rootDir, 'codex') });
+    results.push({ label: 'Codex research skill', path: installGlobalSkill(rootDir, 'codex', RESEARCH_SKILL_NAME) });
     results.push({ label: 'Codex MCP', status: registerCodexMcp(serverFile), path: serverFile });
   }
 
   if (target === 'claude' || target === 'both') {
     const serverFile = prepareHomeMcp(rootDir);
     results.push({ label: 'Claude skill', path: installGlobalSkill(rootDir, 'claude') });
+    results.push({ label: 'Claude research skill', path: installGlobalSkill(rootDir, 'claude', RESEARCH_SKILL_NAME) });
     results.push({ label: 'Claude MCP', status: registerClaudeMcp(serverFile), path: serverFile });
   }
 
@@ -1167,6 +1226,7 @@ function previewAgentAssets(rootDir) {
     mcpUrl: currentMcpUrl() ? redactMcpUrl(currentMcpUrl()) : '',
     project: {
       skill: path.join(rootDir, '.agents', 'skills', SKILL_NAME),
+      researchSkill: path.join(rootDir, '.agents', 'skills', RESEARCH_SKILL_NAME),
       codexConfig: path.join(rootDir, '.codex', 'config.toml'),
       claudeConfig: path.join(rootDir, '.mcp.json'),
       bridge: path.join(rootDir, '.opencrab', 'mcp', 'opencrab_mcp_bridge.mjs'),
@@ -1175,7 +1235,9 @@ function previewAgentAssets(rootDir) {
       env: homeEnvPath(),
       bridge: path.join(os.homedir(), '.opencrab', 'mcp', 'opencrab_mcp_bridge.mjs'),
       codexSkill: path.join(os.homedir(), '.agents', 'skills', SKILL_NAME),
+      codexResearchSkill: path.join(os.homedir(), '.agents', 'skills', RESEARCH_SKILL_NAME),
       claudeSkill: path.join(os.homedir(), '.claude', 'skills', SKILL_NAME),
+      claudeResearchSkill: path.join(os.homedir(), '.claude', 'skills', RESEARCH_SKILL_NAME),
       plugin: path.join(os.homedir(), 'plugins', SERVER_NAME),
       marketplace: path.join(os.homedir(), '.agents', 'plugins', 'marketplace.json'),
     },

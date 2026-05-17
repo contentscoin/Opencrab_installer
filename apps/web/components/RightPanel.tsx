@@ -75,6 +75,7 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
   const [codexReasoning, setCodexReasoning] = useState('high')
   const [codexPermission, setCodexPermission] = useState('auto')
   const [codexEnsureServices, setCodexEnsureServices] = useState(true)
+  const [codexUseResearch, setCodexUseResearch] = useState(true)
   const [codexBusy, setCodexBusy] = useState(false)
   const [codexResult, setCodexResult] = useState<CodexTaskResult | null>(null)
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null)
@@ -256,6 +257,7 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
         reasoningEffort: codexReasoning,
         permissionMode: codexPermission,
         ensureServices: codexEnsureServices,
+        useResearchSkill: codexUseResearch,
       })
       setCodexResult(result)
       showToast('Codex task started')
@@ -646,7 +648,7 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
               </select>
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 6, alignItems: 'center', marginBottom: 8 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr auto auto', gap: 6, alignItems: 'center', marginBottom: 8 }}>
               <select
                 className="input-dark"
                 value={codexPermission}
@@ -665,6 +667,15 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
                   style={{ accentColor: '#f8c537' }}
                 />
                 Neo4j
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 10, color: '#7c6f64', whiteSpace: 'nowrap' }}>
+                <input
+                  type="checkbox"
+                  checked={codexUseResearch}
+                  onChange={(event) => setCodexUseResearch(event.target.checked)}
+                  style={{ accentColor: '#f8c537' }}
+                />
+                Research
               </label>
             </div>
 
