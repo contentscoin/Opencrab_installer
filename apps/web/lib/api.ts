@@ -306,6 +306,19 @@ export async function openDesktopRelease(url?: string): Promise<{ ok: boolean; u
   return data
 }
 
+export async function openExternalUrl(url: string): Promise<{ ok: boolean; url?: string }> {
+  const r = await fetch(`${desktopBase()}/desktop/open-url`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url }),
+  })
+  const data = await r.json().catch(() => ({}))
+  if (!r.ok || data.ok === false) {
+    throw new Error(data.error || 'Failed to open URL')
+  }
+  return data
+}
+
 export async function getNodes(apiKey: string): Promise<OcNode[]> {
   try {
     const r = await fetch(`${BASE}/api/nodes`, { headers: headers(apiKey), cache: 'no-store' })

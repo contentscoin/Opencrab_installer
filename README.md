@@ -96,7 +96,7 @@ OpenCrab local app endpoints:
 Desktop dashboard controls:
 
 - `Local` tab: shows the local graph workspace.
-- `opencrab.sh` tab: opens the cloud OpenCrab page in the desktop workspace, with a fallback button to open it in the system browser.
+- `opencrab.sh` tab: previews the cloud OpenCrab page and opens sign-in flows in the system browser, because Google/OAuth providers commonly block embedded Electron frames.
 - `Ops` tab: checks local service health, starts services, restarts graph services, restarts the web UI, checks GitHub Releases for updates, and opens the latest release page.
 
 ## opencrab.sh Integration
@@ -293,6 +293,12 @@ apps\desktop\dist\win-unpacked\OpenCrab.exe
 - Fixes dashboard API-key auto-detection in packaged desktop builds by loading the local key from the desktop control server.
 - Fixes the Ingest tab request body to match the FastAPI `/api/ingest` schema (`text`, `source_id`, and `metadata`).
 - Changes the desktop default local tier to `pro` so local ingest is not blocked by the cloud free-tier one-source limit.
+
+### v1.0.13
+
+- Opens external HTTP/HTTPS links from the desktop shell in the system browser instead of an Electron child window.
+- Adds explicit `Login in Browser` and `Open opencrab.sh` actions to the cloud tab.
+- Keeps the embedded `opencrab.sh` view as a preview while avoiding OAuth login attempts inside the iframe.
 
 ## Attribution
 

@@ -5,7 +5,7 @@ import dynamic from 'next/dynamic'
 import FileExplorer from '../../components/FileExplorer'
 import RightPanel from '../../components/RightPanel'
 import type { OcNode, OcEdge } from '../../lib/api'
-import { getDesktopStatus, getNodes, getEdges, getStatus } from '../../lib/api'
+import { getDesktopStatus, getNodes, getEdges, getStatus, openExternalUrl, startDesktopOAuth } from '../../lib/api'
 
 const GraphView = dynamic(() => import('../../components/GraphView'), { ssr: false })
 
@@ -92,6 +92,14 @@ export default function DashboardPage() {
     setControls((previous) => ({ ...previous, ...partial }))
   }
 
+  async function handleOpenCloud(url = 'https://opencrab.sh') {
+    await openExternalUrl(url)
+  }
+
+  async function handleCloudLogin() {
+    await startDesktopOAuth()
+  }
+
   return (
     <div
       style={{
@@ -167,15 +175,16 @@ export default function DashboardPage() {
               <button className="btn-gold" style={{ fontSize: 11, padding: '4px 10px' }} onClick={() => setCloudFrameKey((value) => value + 1)}>
                 Reload
               </button>
-              <a
+              <button
                 className="btn-gold"
-                href="https://opencrab.sh"
-                target="_blank"
-                rel="noreferrer"
+                onClick={() => handleOpenCloud()}
                 style={{ fontSize: 11, padding: '4px 10px', textDecoration: 'none' }}
               >
-                Open
-              </a>
+                Open Browser
+              </button>
+              <button className="btn-gold" style={{ fontSize: 11, padding: '4px 10px' }} onClick={handleCloudLogin}>
+                Login
+              </button>
             </>
           )}
         </div>
@@ -194,18 +203,48 @@ export default function DashboardPage() {
               onNodeClick={handleNodeClick}
             />
           ) : (
-            <iframe
-              key={cloudFrameKey}
-              src="https://opencrab.sh"
-              title="opencrab.sh"
-              referrerPolicy="no-referrer-when-downgrade"
+            <div
               style={{
+                position: 'relative',
                 width: '100%',
                 height: '100%',
-                border: 'none',
-                background: '#fff',
+                background: '#111',
               }}
-            />
+            >
+              <iframe
+                key={cloudFrameKey}
+                src="https://opencrab.sh"
+                title="opencrab.sh"
+                referrerPolicy="no-referrer-when-downgrade"
+                sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
+                style={{
+                  width: '100%',
+                  height: '100%',
+                  border: 'none',
+                  background: '#fff',
+                }}
+              />
+              <div
+                style={{
+                  position: 'absolute',
+                  right: 16,
+                  bottom: 16,
+                  display: 'flex',
+                  gap: 8,
+                  padding: 10,
+                  border: '1px solid rgba(248,197,55,0.25)',
+                  borderRadius: 6,
+                  background: 'rgba(17,17,17,0.92)',
+                }}
+              >
+                <button className="btn-gold" style={{ fontSize: 11, padding: '6px 10px' }} onClick={handleCloudLogin}>
+                  Login in Browser
+                </button>
+                <button className="btn-gold" style={{ fontSize: 11, padding: '6px 10px' }} onClick={() => handleOpenCloud()}>
+                  Open opencrab.sh
+                </button>
+              </div>
+            </div>
           )}
         </div>
 

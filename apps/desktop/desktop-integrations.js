@@ -2145,6 +2145,24 @@ function createControlHandler({
         return;
       }
 
+      if (request.method === 'POST' && url.pathname === '/desktop/open-url') {
+        const target = String(body.url || '').trim();
+        let parsed;
+        try {
+          parsed = new URL(target);
+        } catch {
+          sendJson(response, 400, { ok: false, error: 'A valid URL is required.' });
+          return;
+        }
+        if (!['https:', 'http:'].includes(parsed.protocol)) {
+          sendJson(response, 400, { ok: false, error: 'Only http and https URLs can be opened.' });
+          return;
+        }
+        await shell.openExternal(parsed.toString());
+        sendJson(response, 200, { ok: true, url: parsed.toString() });
+        return;
+      }
+
       if (request.method === 'POST' && url.pathname === '/desktop/agent-assets/install') {
         const results = installAgentAssets(app, rootDir, String(body.target || 'project-both'));
         sendJson(response, 200, { ok: true, results });
