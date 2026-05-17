@@ -1,2 +1,8 @@
-import { redirect } from 'next/navigation'
-export default function Home() { redirect('/dashboard') }
+export default function Home() {
+  return (
+    <main>
+      <meta httpEquiv="refresh" content="0;url=/dashboard" />
+      <a href="/dashboard">Open OpenCrab</a>
+    </main>
+  )
+}

@@ -1,6 +1,7 @@
 const { app, BrowserWindow, dialog, shell } = require('electron');
 const { spawn } = require('child_process');
 const fs = require('fs');
+const http = require('http');
 const net = require('net');
 const os = require('os');
 const path = require('path');
@@ -146,16 +147,69 @@ let serviceMonitorInterval = null;
 let serviceMonitorRunning = false;
 let updateCheckInterval = null;
 let lastNotifiedUpdateVersion = '';
+let packagedWebServer = null;
+let activeControlPort = null;
 
 function getRootDir() {
   return getInitialRootDir();
 }
 
+function getRuntimeDir() {
+  return app.isPackaged ? path.join(app.getPath('userData'), 'runtime') : getRootDir();
+}
+
 function getPythonPath(rootDir) {
+  const runtimeDir = app.isPackaged ? getRuntimeDir() : rootDir;
   if (process.platform !== 'win32') {
-    return path.join(rootDir, '.venv', 'bin', 'python');
+    return path.join(runtimeDir, '.venv', 'bin', 'python');
   }
-  return path.join(rootDir, '.venv', 'Scripts', 'python.exe');
+  return path.join(runtimeDir, '.venv', 'Scripts', 'python.exe');
+}
+
+async function ensurePackagedRuntime(rootDir) {
+  if (!app.isPackaged) {
+    return;
+  }
+
+  const runtimeDir = getRuntimeDir();
+  const venvDir = path.join(runtimeDir, '.venv');
+  const markerPath = path.join(runtimeDir, 'runtime.json');
+  const archivePath = path.join(rootDir, 'runtime-archives', 'venv.tar.gz');
+  const pythonPath = getPythonPath(rootDir);
+
+  if (!fs.existsSync(archivePath)) {
+    throw new Error(`Runtime archive not found: ${archivePath}`);
+  }
+
+  const archiveSize = fs.statSync(archivePath).size;
+  if (fs.existsSync(pythonPath) && fs.existsSync(markerPath)) {
+    try {
+      const marker = JSON.parse(fs.readFileSync(markerPath, 'utf8'));
+      if (marker.version === app.getVersion() && marker.archiveSize === archiveSize) {
+        return;
+      }
+    } catch {
+      // Re-extract below if the marker is unreadable.
+    }
+  }
+
+  updateStartupStatus('Preparing the bundled Python runtime. This happens once after install or update.');
+  fs.mkdirSync(runtimeDir, { recursive: true });
+
+  const resolvedRuntimeDir = path.resolve(runtimeDir);
+  const resolvedVenvDir = path.resolve(venvDir);
+  if (!isPathInside(resolvedRuntimeDir, resolvedVenvDir)) {
+    throw new Error(`Refusing to reset runtime path outside user data: ${resolvedVenvDir}`);
+  }
+
+  fs.rmSync(venvDir, { recursive: true, force: true });
+  await runOnce('tar', ['-xzf', archivePath, '-C', runtimeDir], { cwd: rootDir }, 'Runtime');
+
+  fs.writeFileSync(
+    markerPath,
+    JSON.stringify({ version: app.getVersion(), archiveSize, extractedAt: new Date().toISOString() }, null, 2),
+    'utf8',
+  );
 }
 
 function getDesktopPorts() {
@@ -250,6 +304,184 @@ function isMcpInfo(data) {
 
 function redactMcpUrl(url) {
   return url.replace(/(\/api\/mcp\/)[^/?#]+/, '$1<token>');
+}
+
+function getMimeType(filePath) {
+  const extension = path.extname(filePath).toLowerCase();
+  return {
+    '.css': 'text/css; charset=utf-8',
+    '.gif': 'image/gif',
+    '.html': 'text/html; charset=utf-8',
+    '.ico': 'image/x-icon',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.js': 'text/javascript; charset=utf-8',
+    '.json': 'application/json; charset=utf-8',
+    '.png': 'image/png',
+    '.svg': 'image/svg+xml',
+    '.txt': 'text/plain; charset=utf-8',
+    '.webp': 'image/webp',
+    '.woff': 'font/woff',
+    '.woff2': 'font/woff2',
+  }[extension] || 'application/octet-stream';
+}
+
+function isPathInside(parentDir, childPath) {
+  const relative = path.relative(parentDir, childPath);
+  return Boolean(relative) && !relative.startsWith('..') && !path.isAbsolute(relative);
+}
+
+function resolveStaticWebFile(webDir, requestPath) {
+  let pathname = requestPath;
+  try {
+    pathname = decodeURIComponent(pathname);
+  } catch {
+    pathname = '/';
+  }
+
+  if (pathname === '/') {
+    pathname = '/index.html';
+  } else if (pathname.endsWith('/')) {
+    pathname = `${pathname}index.html`;
+  }
+
+  const candidate = path.join(webDir, pathname);
+  if (!isPathInside(webDir, candidate)) {
+    return null;
+  }
+
+  const candidates = [candidate];
+  if (!path.extname(candidate)) {
+    candidates.push(`${candidate}.html`, path.join(candidate, 'index.html'));
+  }
+
+  for (const filePath of candidates) {
+    if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
+      return filePath;
+    }
+  }
+
+  const notFoundPath = path.join(webDir, '404.html');
+  if (fs.existsSync(notFoundPath)) {
+    return notFoundPath;
+  }
+  return path.join(webDir, 'index.html');
+}
+
+function readRequestBuffer(request) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    request.on('data', (chunk) => chunks.push(chunk));
+    request.on('end', () => resolve(Buffer.concat(chunks)));
+    request.on('error', reject);
+  });
+}
+
+async function proxyDesktopControlRequest(request, response, url) {
+  const port = activeControlPort || getControlPort();
+  const target = `http://127.0.0.1:${port}${url.pathname}${url.search}`;
+  const headers = { ...request.headers };
+  delete headers.host;
+  delete headers.connection;
+  delete headers['content-length'];
+
+  const body = request.method === 'GET' || request.method === 'HEAD'
+    ? undefined
+    : await readRequestBuffer(request);
+
+  const upstream = await fetch(target, {
+    method: request.method,
+    headers,
+    body,
+  });
+
+  const responseHeaders = {};
+  const contentType = upstream.headers.get('content-type');
+  if (contentType) {
+    responseHeaders['content-type'] = contentType;
+  }
+
+  const payload = Buffer.from(await upstream.arrayBuffer());
+  response.writeHead(upstream.status, responseHeaders);
+  if (request.method === 'HEAD') {
+    response.end();
+    return;
+  }
+  response.end(payload);
+}
+
+async function stopPackagedWebServer() {
+  if (!packagedWebServer) {
+    return;
+  }
+
+  const server = packagedWebServer;
+  packagedWebServer = null;
+  await new Promise((resolve) => {
+    server.close(() => resolve());
+  });
+  log('Web UI', 'static server stopped');
+}
+
+async function startPackagedWebServer(rootDir) {
+  if (packagedWebServer?.listening) {
+    log('Web UI', 'static server already running');
+    return;
+  }
+
+  const webDir = path.join(rootDir, 'apps', 'web', 'out');
+  if (!fs.existsSync(webDir)) {
+    throw new Error(`Static web output not found: ${webDir}`);
+  }
+
+  const server = http.createServer((request, response) => {
+    const url = new URL(request.url || '/', WEB_URL);
+
+    if (url.pathname.startsWith('/desktop/')) {
+      proxyDesktopControlRequest(request, response, url).catch((error) => {
+        log('Web UI Proxy ERR', error && error.message ? error.message : String(error));
+        response.writeHead(502, { 'content-type': 'application/json; charset=utf-8' });
+        response.end(JSON.stringify({ ok: false, error: 'Desktop control server is not available.' }));
+      });
+      return;
+    }
+
+    if (request.method !== 'GET' && request.method !== 'HEAD') {
+      response.writeHead(405, { 'content-type': 'text/plain; charset=utf-8' });
+      response.end('Method Not Allowed');
+      return;
+    }
+
+    const filePath = resolveStaticWebFile(webDir, url.pathname);
+    if (!filePath || !fs.existsSync(filePath)) {
+      response.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
+      response.end('Not Found');
+      return;
+    }
+
+    response.writeHead(200, {
+      'content-type': getMimeType(filePath),
+      'cache-control': filePath.includes(`${path.sep}_next${path.sep}`)
+        ? 'public, max-age=31536000, immutable'
+        : 'no-store',
+    });
+
+    if (request.method === 'HEAD') {
+      response.end();
+      return;
+    }
+
+    fs.createReadStream(filePath).pipe(response);
+  });
+
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(WEB_PORT, '127.0.0.1', () => {
+      packagedWebServer = server;
+      log('Web UI', `static server ready on ${WEB_URL}`);
+      resolve();
+    });
+  });
 }
 
 function isManagedServiceRunning(serviceKey) {
@@ -832,7 +1064,11 @@ async function restartWebUi() {
   if (!activeServiceEnv) {
     activeServiceEnv = buildServiceEnv();
   }
-  await stopManagedService('next');
+  if (app.isPackaged) {
+    await stopPackagedWebServer();
+  } else {
+    await stopManagedService('next');
+  }
   await startNext(rootDir, activeServiceEnv);
   return { ok: await isWebHealthy(), url: WEB_URL };
 }
@@ -840,6 +1076,12 @@ async function restartWebUi() {
 async function startNext(rootDir, env) {
   if (await isWebHealthy()) {
     log('Next.js', 'already healthy');
+    return;
+  }
+
+  if (app.isPackaged) {
+    await startPackagedWebServer(rootDir);
+    await waitForHttp(`${WEB_URL}/dashboard`, 'Web UI', 30000);
     return;
   }
 
@@ -1020,6 +1262,7 @@ async function startServices() {
   const rootDir = getRootDir();
   loadEnvFile(userEnvPath(app));
   loadEnvFile(path.join(rootDir, '.env.local'));
+  await ensurePackagedRuntime(rootDir);
 
   activeServiceEnv = buildServiceEnv();
   const controlPort = await startControlServer({
@@ -1035,6 +1278,7 @@ async function startServices() {
     checkForUpdates: () => checkForUpdates(false),
     openReleasePage,
   });
+  activeControlPort = controlPort;
   activeServiceEnv.NEXT_PUBLIC_DESKTOP_CONTROL_URL = `http://127.0.0.1:${controlPort}`;
 
   const serviceEnv = activeServiceEnv;
@@ -1191,6 +1435,30 @@ function startUpdateMonitor() {
   updateCheckInterval = setInterval(() => checkForUpdates(false), UPDATE_CHECK_INTERVAL_MS);
 }
 
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (character) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  })[character]);
+}
+
+function renderStartupHtml(title, message) {
+  return LOADING_HTML.replace('OpenCrab is starting', escapeHtml(title)).replace(
+    'Opening the desktop workspace. Local graph services continue warming up in the background after the dashboard appears.',
+    escapeHtml(message),
+  );
+}
+
+function updateStartupStatus(message) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+  mainWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(renderStartupHtml('OpenCrab is starting', message))}`);
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1200,
@@ -1222,19 +1490,7 @@ function showStartupError(error) {
   }
 
   const message = String(error?.message || error || 'Unknown startup error');
-  const html = LOADING_HTML.replace(
-    'OpenCrab is starting',
-    'OpenCrab could not start',
-  ).replace(
-    'Opening the desktop workspace. Local graph services continue warming up in the background after the dashboard appears.',
-    `Startup failed. ${message.replace(/[&<>"']/g, (character) => ({
-      '&': '&amp;',
-      '<': '&lt;',
-      '>': '&gt;',
-      '"': '&quot;',
-      "'": '&#39;',
-    })[character])}`,
-  );
+  const html = renderStartupHtml('OpenCrab could not start', `Startup failed. ${message}`);
   mainWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
 }
 
@@ -1268,6 +1524,10 @@ app.on('before-quit', () => {
   }
   if (updateCheckInterval) {
     clearInterval(updateCheckInterval);
+  }
+  if (packagedWebServer) {
+    packagedWebServer.close();
+    packagedWebServer = null;
   }
   log('Shutdown', 'cleaning up child processes');
   for (const proc of processes) {

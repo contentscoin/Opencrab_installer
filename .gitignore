@@ -46,3 +46,6 @@ _install_test/
 
 # Logs
 *.log
+
+# Generated desktop packaging archives
+apps/desktop/runtime-archives/

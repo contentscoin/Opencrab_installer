@@ -30,6 +30,7 @@ Added desktop pieces:
 - GitHub Release update notification prompt for newer installer versions
 - Dashboard `Ops` tab for manual service start/restart, web UI restart, and update checks
 - Dashboard `opencrab.sh` tab for opening the cloud OpenCrab page inside the desktop workspace
+- Static packaged web UI so installers no longer unpack the full Next.js `node_modules` tree
 
 ## Download
 
@@ -218,6 +219,12 @@ apps\desktop\dist\win-unpacked\OpenCrab.exe
 - Adds a dashboard `Ops` tab for checking updates, opening the release page, starting services, restarting graph services, and restarting the web UI.
 - Adds desktop control API routes for manual update checks and restart actions.
 - Adds a dashboard `opencrab.sh` tab so the cloud OpenCrab page is visible next to the local graph workspace.
+
+### v1.0.6
+
+- Speeds up Windows installation by packaging the dashboard as static web output instead of unpacking the full Next.js runtime and `node_modules`.
+- Serves the packaged dashboard from the Electron main process and proxies `/desktop/*` calls to the active desktop control server.
+- Keeps the development flow on Next.js dev server while using the lighter static server only for packaged builds.
 
 ## Attribution
 

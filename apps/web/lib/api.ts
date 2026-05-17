@@ -1,5 +1,13 @@
 const BASE = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8080'
-const DESKTOP_BASE = process.env.NEXT_PUBLIC_DESKTOP_CONTROL_URL || 'http://127.0.0.1:18273'
+const DESKTOP_BASE = process.env.NEXT_PUBLIC_DESKTOP_CONTROL_URL || ''
+
+function desktopBase() {
+  if (DESKTOP_BASE) return DESKTOP_BASE
+  if (typeof window !== 'undefined' && window.location.hostname === '127.0.0.1') {
+    return window.location.origin
+  }
+  return 'http://127.0.0.1:18273'
+}
 
 function headers(apiKey?: string) {
   const h: Record<string, string> = { 'Content-Type': 'application/json' }
@@ -170,7 +178,7 @@ export async function ingestSource(
 }
 
 export async function startLocalServices(): Promise<LocalServicesStatus> {
-  const r = await fetch(`${DESKTOP_BASE}/desktop/services/start`, {
+  const r = await fetch(`${desktopBase()}/desktop/services/start`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ reason: 'ingest' }),
@@ -188,7 +196,7 @@ export async function restartLocalServices(input: {
   includeMcp?: boolean
   includeWeb?: boolean
 } = {}): Promise<LocalServicesStatus> {
-  const r = await fetch(`${DESKTOP_BASE}/desktop/services/restart`, {
+  const r = await fetch(`${desktopBase()}/desktop/services/restart`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
@@ -201,7 +209,7 @@ export async function restartLocalServices(input: {
 }
 
 export async function restartWebUi(): Promise<{ ok: boolean; url: string }> {
-  const r = await fetch(`${DESKTOP_BASE}/desktop/web/restart`, {
+  const r = await fetch(`${desktopBase()}/desktop/web/restart`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({}),
@@ -214,7 +222,7 @@ export async function restartWebUi(): Promise<{ ok: boolean; url: string }> {
 }
 
 export async function getLocalServicesStatus(): Promise<LocalServicesStatus> {
-  const r = await fetch(`${DESKTOP_BASE}/desktop/services/status`, { cache: 'no-store' })
+  const r = await fetch(`${desktopBase()}/desktop/services/status`, { cache: 'no-store' })
   const data = await r.json().catch(() => ({}))
   if (!r.ok || data.ok === false) {
     throw new Error(data.error || 'Failed to read local service status')
@@ -223,7 +231,7 @@ export async function getLocalServicesStatus(): Promise<LocalServicesStatus> {
 }
 
 export async function checkDesktopUpdate(): Promise<UpdateStatus> {
-  const r = await fetch(`${DESKTOP_BASE}/desktop/update/check`, { cache: 'no-store' })
+  const r = await fetch(`${desktopBase()}/desktop/update/check`, { cache: 'no-store' })
   const data = await r.json().catch(() => ({}))
   if (!r.ok || data.ok === false) {
     throw new Error(data.error || 'Failed to check for updates')
@@ -232,7 +240,7 @@ export async function checkDesktopUpdate(): Promise<UpdateStatus> {
 }
 
 export async function openDesktopRelease(url?: string): Promise<{ ok: boolean; url?: string }> {
-  const r = await fetch(`${DESKTOP_BASE}/desktop/update/open`, {
+  const r = await fetch(`${desktopBase()}/desktop/update/open`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ url }),
@@ -268,7 +276,7 @@ export async function getEdges(apiKey: string): Promise<OcEdge[]> {
 
 export async function getDesktopStatus(): Promise<DesktopStatus> {
   try {
-    const r = await fetch(`${DESKTOP_BASE}/desktop/status`, { cache: 'no-store' })
+    const r = await fetch(`${desktopBase()}/desktop/status`, { cache: 'no-store' })
     if (!r.ok) return { ok: false, mcpUrlConfigured: false, mcpUrl: '' }
     return r.json()
   } catch {
@@ -277,7 +285,7 @@ export async function getDesktopStatus(): Promise<DesktopStatus> {
 }
 
 export async function saveDesktopMcpUrl(url: string, apiKey = ''): Promise<{ mcpUrl: string; tools: number }> {
-  const r = await fetch(`${DESKTOP_BASE}/desktop/mcp-url`, {
+  const r = await fetch(`${desktopBase()}/desktop/mcp-url`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ url, apiKey }),
@@ -290,7 +298,7 @@ export async function saveDesktopMcpUrl(url: string, apiKey = ''): Promise<{ mcp
 }
 
 export async function startDesktopOAuth(): Promise<{ authUrl: string }> {
-  const r = await fetch(`${DESKTOP_BASE}/desktop/oauth/start`, {
+  const r = await fetch(`${desktopBase()}/desktop/oauth/start`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({}),
@@ -303,7 +311,7 @@ export async function startDesktopOAuth(): Promise<{ authUrl: string }> {
 }
 
 export async function installAgentAssets(target: string): Promise<AgentAssetResult[]> {
-  const r = await fetch(`${DESKTOP_BASE}/desktop/agent-assets/install`, {
+  const r = await fetch(`${desktopBase()}/desktop/agent-assets/install`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ target }),
@@ -317,7 +325,7 @@ export async function installAgentAssets(target: string): Promise<AgentAssetResu
 
 export async function getCodexStatus(): Promise<CodexStatus> {
   try {
-    const r = await fetch(`${DESKTOP_BASE}/desktop/codex/status`, { cache: 'no-store' })
+    const r = await fetch(`${desktopBase()}/desktop/codex/status`, { cache: 'no-store' })
     if (!r.ok) {
       return { ok: false, available: false, path: '', version: '', message: 'Codex status unavailable' }
     }
@@ -334,7 +342,7 @@ export async function runCodexTask(input: {
   permissionMode?: string
   ensureServices?: boolean
 }): Promise<CodexTaskResult> {
-  const r = await fetch(`${DESKTOP_BASE}/desktop/codex/task`, {
+  const r = await fetch(`${desktopBase()}/desktop/codex/task`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),

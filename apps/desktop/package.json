@@ -1,15 +1,16 @@
 {
   "name": "opencrab-desktop",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "OpenCrab Desktop Application",
   "author": "OpenCrab",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
     "build:web": "npm --prefix ../web run build",
-    "predist:win": "npm run build:web",
-    "predist:mac": "npm run build:web",
-    "prepack": "npm run build:web",
+    "prepare:runtime": "node scripts/pack-runtime-archives.js",
+    "predist:win": "npm run build:web && npm run prepare:runtime",
+    "predist:mac": "npm run build:web && npm run prepare:runtime",
+    "prepack": "npm run build:web && npm run prepare:runtime",
     "pack": "electron-builder --dir -p never",
     "dist:win": "electron-builder --win nsis -p never",
     "dist:mac": "electron-builder --mac dmg zip -p never",
@@ -39,9 +40,8 @@
     },
     "extraResources": [
       {
-        "from": "../../.venv",
-        "to": ".venv",
-        "filter": ["**/*", "!**/__pycache__/**", "!**/*.pyc", "!**/*.pyo"]
+        "from": "runtime-archives/venv.tar.gz",
+        "to": "runtime-archives/venv.tar.gz"
       },
       {
         "from": "../../opencrab",
@@ -54,9 +54,9 @@
         "filter": ["**/*", "!**/__pycache__/**", "!**/*.pyc", "!**/*.pyo"]
       },
       {
-        "from": "../web",
-        "to": "apps/web",
-        "filter": ["**/*", "!.next/cache/**", "!node_modules/.cache/**", "!*.tsbuildinfo"]
+        "from": "../web/out",
+        "to": "apps/web/out",
+        "filter": ["**/*"]
       },
       {
         "from": "../../scripts",
