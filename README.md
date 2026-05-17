@@ -346,6 +346,12 @@ apps\desktop\dist\win-unpacked\OpenCrab.exe
 - Raises research presets and adds manual source, evidence, search round, and social-source controls for Codex pack generation.
 - Uses full desktop Codex access on Windows to avoid `CreateProcessWithLogonW failed: 1326` sandbox failures, while keeping the live task chat log.
 
+### v1.0.19
+
+- Names Codex-generated pack ZIP files from the user request instead of task ids.
+- Stores a clean pack display name separately from the unique ZIP filename.
+- Uses the pack display name as the ingest title and records it in pack metadata.
+
 ## Attribution
 
 OpenCrab itself comes from [AlexAI-MCP/OpenCrab](https://github.com/AlexAI-MCP/OpenCrab). This fork focuses on installer, desktop runtime orchestration, OpenCrab MCP bridge assets, and public release packaging.

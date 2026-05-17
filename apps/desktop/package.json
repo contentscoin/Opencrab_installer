@@ -1,6 +1,6 @@
 {
   "name": "opencrab-desktop",
-  "version": "1.0.18",
+  "version": "1.0.19",
   "description": "OpenCrab Desktop Application",
   "author": "OpenCrab",
   "main": "main.js",

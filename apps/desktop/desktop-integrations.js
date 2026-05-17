@@ -1105,6 +1105,85 @@ function sanitizeFileName(value, fallback = 'opencrab-pack') {
   return cleaned || fallback;
 }
 
+function taskIdSuffix(taskId) {
+  const parts = String(taskId || '').split('-').filter(Boolean);
+  return parts[parts.length - 1] || randomBase64Url(4);
+}
+
+function buildPackDisplayName(text, fallbackTaskId = '') {
+  const commonKorean = new Set([
+    '관련된',
+    '관련',
+    '모든정보',
+    '모든',
+    '정보',
+    '자료',
+    '최대한',
+    '자세하게',
+    '상세하게',
+    '만들어줘',
+    '만들어',
+    '만들기',
+    '팩',
+    '팩으로',
+    '패키지',
+    '생성',
+    '정리',
+    '조사',
+    '리서치',
+    '인제스트',
+    '데이터',
+    '데이타',
+  ]);
+  const commonEnglish = new Set([
+    'a',
+    'an',
+    'and',
+    'as',
+    'build',
+    'create',
+    'data',
+    'detailed',
+    'for',
+    'from',
+    'generate',
+    'info',
+    'information',
+    'ingest',
+    'make',
+    'of',
+    'on',
+    'pack',
+    'package',
+    'please',
+    'related',
+    'research',
+    'the',
+    'to',
+    'with',
+  ]);
+  const withoutUrls = String(text || '')
+    .replace(/https?:\/\/\S+/gi, ' ')
+    .replace(/[`"'()[\]{}<>]/g, ' ');
+  const tokens = withoutUrls
+    .split(/[,\n\r\t/|:;]+|\s+/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .map((item) => item.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ''))
+    .filter(Boolean)
+    .filter((item) => {
+      const lower = item.toLowerCase();
+      if (commonEnglish.has(lower) || commonKorean.has(item)) return false;
+      if (/^(팩|팩으로|만들|생성|정리|조사)/.test(item)) return false;
+      if (/(만들어줘|해주세요|해줘)$/.test(item)) return false;
+      return true;
+    })
+    .slice(0, 8);
+  const base = tokens.length > 0 ? tokens.join(' ') : `OpenCrab Pack ${taskIdSuffix(fallbackTaskId)}`;
+  const withSuffix = /pack|팩/i.test(base) ? base : `${base} pack`;
+  return withSuffix.slice(0, 90);
+}
+
 function settingsPath(app) {
   return path.join(app.getPath('userData'), 'desktop-settings.json');
 }
@@ -1261,9 +1340,11 @@ async function ingestGeneratedPack(app, match, apiKey, serviceEnv = {}, target =
   const ingestTarget = normalizeIngestTarget(target);
   const token = String(apiKey || serviceEnv.OPENCRAB_API_KEY || process.env.OPENCRAB_API_KEY || 'local-opencrab-key').trim();
   const { text, files } = readPackTextForIngest(pack);
-  const sourceId = `opencrab-pack:${pack.taskId || path.basename(pack.zipPath)}`;
+  const packTitle = String(pack.name || path.basename(pack.zipPath, '.zip') || 'OpenCrab generated pack').trim();
+  const sourceId = `opencrab-pack:${sanitizeFileName(`${packTitle}-${taskIdSuffix(pack.taskId)}`, pack.taskId || 'generated-pack').toLowerCase()}`;
   const metadata = {
     source_type: 'opencrab_generated_pack',
+    pack_name: packTitle,
     zip_path: pack.zipPath,
     task_id: pack.taskId,
     file_count: files.length,
@@ -1273,7 +1354,7 @@ async function ingestGeneratedPack(app, match, apiKey, serviceEnv = {}, target =
     text,
     sourceType: 'opencrab_generated_pack',
     sourceId,
-    title: pack.name || sourceId,
+    title: packTitle,
     metadata,
   }, token, serviceEnv, ingestTarget);
   const updated = updateGeneratedPack(app, match, {
@@ -1490,13 +1571,16 @@ function getPackContext(app, cwd, taskId, body) {
     ? savePackOutputDir(app, body.packOutputDir).outputDir
     : getPackSettings(app).outputDir;
   const workDir = path.join(cwd, 'opencrab_data', 'packs', taskId);
+  const displayName = buildPackDisplayName(body.prompt || body.task || '', taskId);
+  const fileBaseName = sanitizeFileName(`${displayName}-${taskIdSuffix(taskId)}`);
   fs.mkdirSync(workDir, { recursive: true });
   fs.mkdirSync(outputDir, { recursive: true });
   return {
     enabled: packageOutput,
+    displayName,
     workDir,
     outputDir,
-    zipName: `${sanitizeFileName(`opencrab-pack-${taskId}`)}.zip`,
+    zipName: `${fileBaseName}.zip`,
   };
 }
 
@@ -1560,6 +1644,7 @@ function buildCodexTaskContent({
 
 - Pack staging directory: ${pack.workDir}
 - Pack ZIP output directory: ${pack.outputDir}
+- Pack display name: ${pack.displayName || pack.zipName.replace(/\.zip$/i, '')}
 - Pack ZIP file name: ${pack.zipName}
 - When creating an ontology pack, marketplace pack, image pack, or reusable ingest package, write every pack artifact under the pack staging directory.
 - Include a short README.md and a machine-readable manifest such as manifest.json or pack.yaml in the staging directory.
@@ -1782,6 +1867,7 @@ function packageCodexPack(app, task, pack, taskFile, outputPath) {
     taskId: task.taskId,
     createdAt: new Date().toISOString(),
     prompt: task.prompt || '',
+    packName: pack.displayName || '',
     workspace: task.cwd || '',
     packWorkDir: pack.workDir,
   };
@@ -1813,7 +1899,7 @@ function packageCodexPack(app, task, pack, taskFile, outputPath) {
   const record = addGeneratedPack(app, {
     id: `${task.taskId}`,
     taskId: task.taskId,
-    name: pack.zipName.replace(/\.zip$/i, ''),
+    name: pack.displayName || pack.zipName.replace(/\.zip$/i, ''),
     zipPath,
     outputDir: pack.outputDir,
     workDir: pack.workDir,
