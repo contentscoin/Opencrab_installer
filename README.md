@@ -33,6 +33,7 @@ Added desktop pieces:
 - Static packaged web UI so installers no longer unpack the full Next.js `node_modules` tree
 - Live Codex CLI task log in the Agent tab, including setup steps, Codex progress, stderr, and final response
 - Bundled `insane-search` research skill/engine for ontology-pack source collection through Codex tasks
+- Bundled Multilingual-CLIP/OpenCLIP vision skill for image dataset analysis and image-based pack generation
 
 ## Download
 
@@ -150,10 +151,17 @@ When `Neo4j` is checked in the Agent tab, OpenCrab Desktop starts the local Neo4
 - `OPENCRAB_PYTHON`
 - `OPENCRAB_RESEARCH_SKILL_DIR`
 - `OPENCRAB_RESEARCH_ENGINE_DIR`
+- `OPENCRAB_VISION_SKILL_DIR`
+- `OPENCRAB_VISION_ENGINE_DIR`
+- `OPENCRAB_VISION_MODEL`
+- `OPENCRAB_VISION_ENCODER`
+- `OPENCRAB_VISION_PRETRAINED`
 
 The task file redacts OpenCrab MCP tokens, but the child Codex process receives the real endpoint through environment variables so it can use the configured MCP bridge.
 
 When `Research` is checked in the Agent tab, the task context also points Codex at the bundled `insane-search` skill and Python research engine. Use it for ontology-pack research, source discovery, blocked-page fallback fetching, public evidence collection, and entity/claim/source extraction before writing ingest files. Research outputs should be saved under `codex-workspace/opencrab_data/research` in packaged installs.
+
+When `Vision` is checked in the Agent tab, the task context points Codex at the bundled `multilingual-clip-vision` skill and helper engine. Use it for image datasets, product/package images, screenshots, multilingual visual labels, and image-based ontology packs. Vision outputs should be saved under `codex-workspace/opencrab_data/vision`. Heavy model dependencies are optional; install them only when needed with `python -m pip install multilingual-clip torch open_clip_torch pillow numpy transformers`, or set `OPENCRAB_INSTALL_VISION_DEPS=1` during installer builds to bundle them.
 
 ## Signing And Notarization
 
@@ -246,8 +254,17 @@ apps\desktop\dist\win-unpacked\OpenCrab.exe
 - Installs the research skill into generated Codex/Claude/project/plugin assets alongside the OpenCrab MCP skill.
 - Packages research runtime dependencies into the bundled Python environment before installer builds.
 
+### v1.0.9
+
+- Adds a `multilingual-clip-vision` skill and helper engine for image dataset analysis and image-based OpenCrab pack generation.
+- Adds a `Vision` toggle to Codex tasks and injects the vision skill path, engine path, model defaults, Python command, and output directory into the task context.
+- Installs the vision skill into generated Codex/Claude/project/plugin assets alongside the OpenCrab MCP and research skills.
+- Keeps heavy vision dependencies optional by default, with `OPENCRAB_INSTALL_VISION_DEPS=1` available for builds that intentionally bundle them.
+
 ## Attribution
 
 OpenCrab itself comes from [AlexAI-MCP/OpenCrab](https://github.com/AlexAI-MCP/OpenCrab). This fork focuses on installer, desktop runtime orchestration, OpenCrab MCP bridge assets, and public release packaging.
 
 The bundled `insane-search` research skill and engine come from [fivetaku/insane-search](https://github.com/fivetaku/insane-search) under the MIT license, included here to support OpenCrab ontology-pack research workflows.
+
+The image package workflow is based on [FreddeFrallan/Multilingual-CLIP](https://github.com/FreddeFrallan/Multilingual-CLIP), which is distributed under the MIT license, and uses compatible CLIP/OpenCLIP image encoders when the optional vision runtime is installed.

@@ -76,6 +76,7 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
   const [codexPermission, setCodexPermission] = useState('auto')
   const [codexEnsureServices, setCodexEnsureServices] = useState(true)
   const [codexUseResearch, setCodexUseResearch] = useState(true)
+  const [codexUseVision, setCodexUseVision] = useState(true)
   const [codexBusy, setCodexBusy] = useState(false)
   const [codexResult, setCodexResult] = useState<CodexTaskResult | null>(null)
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null)
@@ -258,6 +259,7 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
         permissionMode: codexPermission,
         ensureServices: codexEnsureServices,
         useResearchSkill: codexUseResearch,
+        useVisionSkill: codexUseVision,
       })
       setCodexResult(result)
       showToast('Codex task started')
@@ -624,7 +626,7 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
               className="input-dark"
               value={codexPrompt}
               onChange={(event) => setCodexPrompt(event.target.value)}
-              placeholder="Ask Codex to create ingest files, inspect Neo4j, or prepare graph work"
+              placeholder="Ask Codex to create ingest files, inspect Neo4j, prepare graph work, or build image packs"
               style={{ marginBottom: 8, height: 96, fontSize: 11 }}
             />
 
@@ -648,35 +650,46 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
               </select>
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr auto auto', gap: 6, alignItems: 'center', marginBottom: 8 }}>
+            <div style={{ marginBottom: 8 }}>
               <select
                 className="input-dark"
                 value={codexPermission}
                 onChange={(event) => setCodexPermission(event.target.value)}
-                style={{ fontSize: 11 }}
+                style={{ fontSize: 11, marginBottom: 6 }}
               >
                 <option value="review">review</option>
                 <option value="auto">auto</option>
                 <option value="yolo">yolo</option>
               </select>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 10, color: '#7c6f64', whiteSpace: 'nowrap' }}>
-                <input
-                  type="checkbox"
-                  checked={codexEnsureServices}
-                  onChange={(event) => setCodexEnsureServices(event.target.checked)}
-                  style={{ accentColor: '#f8c537' }}
-                />
-                Neo4j
-              </label>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 10, color: '#7c6f64', whiteSpace: 'nowrap' }}>
-                <input
-                  type="checkbox"
-                  checked={codexUseResearch}
-                  onChange={(event) => setCodexUseResearch(event.target.checked)}
-                  style={{ accentColor: '#f8c537' }}
-                />
-                Research
-              </label>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 10, color: '#7c6f64', whiteSpace: 'nowrap' }}>
+                  <input
+                    type="checkbox"
+                    checked={codexEnsureServices}
+                    onChange={(event) => setCodexEnsureServices(event.target.checked)}
+                    style={{ accentColor: '#f8c537' }}
+                  />
+                  Neo4j
+                </label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 10, color: '#7c6f64', whiteSpace: 'nowrap' }}>
+                  <input
+                    type="checkbox"
+                    checked={codexUseResearch}
+                    onChange={(event) => setCodexUseResearch(event.target.checked)}
+                    style={{ accentColor: '#f8c537' }}
+                  />
+                  Research
+                </label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 10, color: '#7c6f64', whiteSpace: 'nowrap' }}>
+                  <input
+                    type="checkbox"
+                    checked={codexUseVision}
+                    onChange={(event) => setCodexUseVision(event.target.checked)}
+                    style={{ accentColor: '#f8c537' }}
+                  />
+                  Vision
+                </label>
+              </div>
             </div>
 
             <button

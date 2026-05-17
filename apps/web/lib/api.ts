@@ -355,6 +355,7 @@ export async function runCodexTask(input: {
   permissionMode?: string
   ensureServices?: boolean
   useResearchSkill?: boolean
+  useVisionSkill?: boolean
 }): Promise<CodexTaskResult> {
   const r = await fetch(`${desktopBase()}/desktop/codex/task`, {
     method: 'POST',

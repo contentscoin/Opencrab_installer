@@ -11,6 +11,7 @@ const pythonPath = process.platform === 'win32'
   ? path.join(venvDir, 'Scripts', 'python.exe')
   : path.join(venvDir, 'bin', 'python');
 const researchDeps = ['curl_cffi', 'beautifulsoup4', 'pyyaml', 'feedparser', 'yt-dlp'];
+const visionDeps = ['multilingual-clip', 'torch', 'open_clip_torch', 'pillow', 'numpy', 'transformers'];
 
 function runPython(args, options = {}) {
   return spawnSync(
@@ -18,6 +19,22 @@ function runPython(args, options = {}) {
     args,
     { stdio: 'inherit', windowsHide: true, ...options },
   );
+}
+
+function installPythonPackages(label, deps) {
+  console.log(`Installing ${label}: ${deps.join(', ')}`);
+  let pipResult = runPython(['-m', 'pip', 'install', '--upgrade', '--quiet', ...deps]);
+  if (pipResult.status !== 0) {
+    console.log('pip is unavailable or failed; attempting to bootstrap pip with ensurepip.');
+    const ensurePipResult = runPython(['-m', 'ensurepip', '--upgrade']);
+    if (ensurePipResult.status !== 0) {
+      throw new Error(`Failed to bootstrap pip with ensurepip, exit code ${ensurePipResult.status}`);
+    }
+    pipResult = runPython(['-m', 'pip', 'install', '--upgrade', '--quiet', ...deps]);
+  }
+  if (pipResult.status !== 0) {
+    throw new Error(`Failed to install ${label}, exit code ${pipResult.status}`);
+  }
 }
 
 if (!fs.existsSync(venvDir)) {
@@ -29,19 +46,13 @@ if (!fs.existsSync(pythonPath)) {
 }
 
 if (process.env.OPENCRAB_SKIP_RESEARCH_DEPS !== '1') {
-  console.log(`Installing research runtime dependencies: ${researchDeps.join(', ')}`);
-  let pipResult = runPython(['-m', 'pip', 'install', '--upgrade', '--quiet', ...researchDeps]);
-  if (pipResult.status !== 0) {
-    console.log('pip is unavailable or failed; attempting to bootstrap pip with ensurepip.');
-    const ensurePipResult = runPython(['-m', 'ensurepip', '--upgrade']);
-    if (ensurePipResult.status !== 0) {
-      throw new Error(`Failed to bootstrap pip with ensurepip, exit code ${ensurePipResult.status}`);
-    }
-    pipResult = runPython(['-m', 'pip', 'install', '--upgrade', '--quiet', ...researchDeps]);
-  }
-  if (pipResult.status !== 0) {
-    throw new Error(`Failed to install research runtime dependencies, exit code ${pipResult.status}`);
-  }
+  installPythonPackages('research runtime dependencies', researchDeps);
+}
+
+if (process.env.OPENCRAB_INSTALL_VISION_DEPS === '1') {
+  installPythonPackages('optional vision runtime dependencies', visionDeps);
+} else {
+  console.log('Skipping optional vision runtime dependencies. Set OPENCRAB_INSTALL_VISION_DEPS=1 to bundle them.');
 }
 
 fs.rmSync(archiveDir, { recursive: true, force: true });
