@@ -209,7 +209,7 @@ class LocalGraphStore:
             # Outgoing edges
             if direction in ("out", "both"):
                 cur.execute(
-                    "SELECT to_type, to_id FROM graph_edges WHERE from_id=?",
+                    "SELECT to_type, to_id, relation FROM graph_edges WHERE from_id=?",
                     (current_id,),
                 )
                 for row in cur.fetchall():
@@ -218,13 +218,21 @@ class LocalGraphStore:
                         visited.add(nid)
                         node = self._fetch_node_props(cur, row["to_type"], nid)
                         if node:
-                            results.append({"properties": node, "labels": [row["to_type"]]})
+                            results.append(
+                                {
+                                    "properties": node,
+                                    "labels": [row["to_type"]],
+                                    "relation_type": row["relation"],
+                                    "relationship_types": [row["relation"]],
+                                    "depth": current_depth + 1,
+                                }
+                            )
                         queue.append((nid, current_depth + 1))
 
             # Incoming edges
             if direction in ("in", "both"):
                 cur.execute(
-                    "SELECT from_type, from_id FROM graph_edges WHERE to_id=?",
+                    "SELECT from_type, from_id, relation FROM graph_edges WHERE to_id=?",
                     (current_id,),
                 )
                 for row in cur.fetchall():
@@ -233,7 +241,15 @@ class LocalGraphStore:
                         visited.add(nid)
                         node = self._fetch_node_props(cur, row["from_type"], nid)
                         if node:
-                            results.append({"properties": node, "labels": [row["from_type"]]})
+                            results.append(
+                                {
+                                    "properties": node,
+                                    "labels": [row["from_type"]],
+                                    "relation_type": row["relation"],
+                                    "relationship_types": [row["relation"]],
+                                    "depth": current_depth + 1,
+                                }
+                            )
                         queue.append((nid, current_depth + 1))
 
         return results[:limit]

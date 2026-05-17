@@ -36,6 +36,16 @@ Added desktop pieces:
 - Bundled Multilingual-CLIP/OpenCLIP vision skill for image dataset analysis and image-based pack generation
 - Codex-generated packs are saved as ZIP files, registered in the Ingest queue, and can be stored in a user-selected folder
 
+## Upstream LocalCrab Update
+
+This fork tracks the public LocalCrab/OpenCrab core while preserving the desktop installer's Docker/Neo4j orchestration. The upstream LocalCrab positioning and pack-format documentation is available here:
+
+- [LocalCrab factory workflow](docs/localcrab-factory-workflow.md)
+- [LocalCrab and OpenCrab SaaS relationship](docs/localcrab-opencrab-relationship.md)
+- [OpenCrab Pack v1](docs/opencrab-pack-v1.md)
+
+The desktop installer keeps the local Neo4j stack because Codex-driven ingest and pack validation use it directly.
+
 ## Download
 
 Installers are published on the GitHub Releases page:
@@ -299,6 +309,13 @@ apps\desktop\dist\win-unpacked\OpenCrab.exe
 - Opens external HTTP/HTTPS links from the desktop shell in the system browser instead of an Electron child window.
 - Adds explicit `Login in Browser` and `Open opencrab.sh` actions to the cloud tab.
 - Keeps the embedded `opencrab.sh` view as a preview while avoiding OAuth login attempts inside the iframe.
+
+### v1.0.14
+
+- Pulls in the latest upstream LocalCrab pack/export docs and OpenCrab Pack v1 contract.
+- Adds `opencrab export-neo4j-pack` for exporting a verified Neo4j graph snapshot into `neo4j/opencrab_ingest.jsonl`.
+- Improves hybrid retrieval for Korean relation questions, BM25 anchors, graph expansion, and reranking consensus.
+- Preserves the desktop installer's Docker/Neo4j orchestration instead of switching the fork to upstream local-only storage.
 
 ## Attribution
 

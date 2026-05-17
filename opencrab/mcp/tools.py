@@ -55,7 +55,7 @@ _context: dict[str, Any] = {}
 
 
 def _get_context() -> dict[str, Any]:
-    """Lazily initialise all stores and engines using the factory (respects STORAGE_MODE)."""
+    """Lazily initialise stores and engines using the configured factory."""
     global _context
     if _context:
         return _context

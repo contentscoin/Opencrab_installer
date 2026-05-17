@@ -459,6 +459,50 @@ def manifest(json_output: bool) -> None:
 
 
 # ---------------------------------------------------------------------------
+# export-neo4j-pack
+# ---------------------------------------------------------------------------
+
+
+@main.command("export-neo4j-pack")
+@click.option(
+    "--output",
+    "-o",
+    required=True,
+    type=click.Path(),
+    help="Output JSONL path, usually neo4j/opencrab_ingest.jsonl.",
+)
+@click.option("--pack-id", default=None, help="Optional pack_id/source filter.")
+@click.option("--node-limit", default=500_000, show_default=True, type=int)
+@click.option("--edge-limit", default=1_000_000, show_default=True, type=int)
+def export_neo4j_pack(
+    output: str,
+    pack_id: str | None,
+    node_limit: int,
+    edge_limit: int,
+) -> None:
+    """Export a verified Neo4j graph snapshot for an OpenCrab pack."""
+    from opencrab.config import get_settings
+    from opencrab.pack import export_neo4j_opencrab_ingest
+    from opencrab.stores.neo4j_store import Neo4jStore
+
+    cfg = get_settings()
+    neo4j = Neo4jStore(
+        uri=cfg.neo4j_uri,
+        user=cfg.neo4j_user,
+        password=cfg.neo4j_password,
+        database=cfg.neo4j_database,
+    )
+    status = export_neo4j_opencrab_ingest(
+        neo4j,
+        output,
+        pack_id=pack_id,
+        node_limit=node_limit,
+        edge_limit=edge_limit,
+    )
+    console.print_json(json.dumps(status, ensure_ascii=False))
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
