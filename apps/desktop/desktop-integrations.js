@@ -13,7 +13,7 @@ const RESEARCH_SKILL_NAME = 'insane-search';
 const VISION_SKILL_NAME = 'multilingual-clip-vision';
 const DEFAULT_CODEX_MODEL = 'gpt-5.5';
 const DEFAULT_CODEX_REASONING = 'high';
-const DEFAULT_CODEX_PERMISSION = 'auto';
+const DEFAULT_CODEX_PERMISSION = 'yolo';
 const CODEX_TASK_TIMEOUT_MS = 30 * 60 * 1000;
 const CODEX_TASK_HISTORY_LIMIT = 20;
 const CODEX_TASK_MESSAGE_LIMIT = 400;
@@ -79,28 +79,44 @@ const DEFAULT_INGEST_RESEARCH_FIELDS = INGEST_RESEARCH_FIELDS.map((field) => fie
 const INGEST_RESEARCH_DEPTHS = {
   quick: {
     label: 'Quick',
-    sourceTarget: '3-5 credible public sources',
+    sourceCount: 10,
+    evidencePerClaim: 1,
+    searchRounds: 2,
+    socialSourceCount: 2,
+    sourceTarget: '5-10 credible public sources',
     evidenceTarget: 'at least 1 evidence item for each major claim',
     relationTarget: 'direct entity-source-concept links only',
     outputTarget: 'compact README plus manifest or JSONL records',
   },
   standard: {
     label: 'Standard',
-    sourceTarget: '8-15 credible public sources across primary and secondary material',
+    sourceCount: 30,
+    evidencePerClaim: 2,
+    searchRounds: 4,
+    socialSourceCount: 6,
+    sourceTarget: '15-30 credible public sources across primary and secondary material',
     evidenceTarget: '2 evidence items for each major claim when sources exist',
     relationTarget: 'entities, concepts, claims, sources, and clear relationships',
     outputTarget: 'README, manifest, research matrix, and ingest-ready records',
   },
   deep: {
     label: 'Deep',
-    sourceTarget: '15-35 sources with primary-source preference and cross-checking',
+    sourceCount: 70,
+    evidencePerClaim: 3,
+    searchRounds: 7,
+    socialSourceCount: 12,
+    sourceTarget: '40-70 sources with primary-source preference, social trend checks, and cross-checking',
     evidenceTarget: '2-3 evidence items per claim plus counterevidence or uncertainty notes',
     relationTarget: 'multi-hop relationships, communities, outcomes, levers, and policies',
     outputTarget: 'full pack structure with evidence tables, relationship files, and confidence fields',
   },
   exhaustive: {
     label: 'Exhaustive',
-    sourceTarget: '35+ sources where available, including primary, historical, technical, and policy material',
+    sourceCount: 120,
+    evidencePerClaim: 4,
+    searchRounds: 12,
+    socialSourceCount: 25,
+    sourceTarget: '80-150 sources where available, including primary, historical, technical, social, retail, media, and policy material',
     evidenceTarget: 'triangulated evidence, contradictions, provenance, gaps, and confidence scoring',
     relationTarget: 'complete ontology threads across all selected fields with causal and policy constraints',
     outputTarget: 'reviewable ontology pack with source ledger, research matrix, entities, claims, Cypher or JSONL, and gap report',
@@ -385,6 +401,10 @@ async function callMcpTool(name, args, apiKey = '') {
   if (!url) {
     throw new Error('OpenCrab MCP URL is not configured.');
   }
+  return callMcpToolAt(url, name, args, apiKey);
+}
+
+async function callMcpToolAt(url, name, args, apiKey = '') {
   const data = await postMcpJson(url, {
     jsonrpc: '2.0',
     id: Date.now(),
@@ -395,6 +415,23 @@ async function callMcpTool(name, args, apiKey = '') {
     },
   }, apiKey);
   return data?.result ?? data;
+}
+
+async function refreshMcpStatus(app, rootDir, url, apiKey = '') {
+  const tools = await testMcpUrl(url, apiKey);
+  const toolNames = getMcpToolNames(tools);
+  const updates = {
+    OPENCRAB_MCP_TOOL_COUNT: String(toolNames.length),
+    OPENCRAB_MCP_TOOL_NAMES: JSON.stringify(toolNames),
+  };
+  updateEnvFile(userEnvPath(app), updates);
+  updateEnvFile(homeEnvPath(), updates);
+  if (!app.isPackaged) {
+    updateEnvFile(rootEnvPath(rootDir), updates);
+  }
+  process.env.OPENCRAB_MCP_TOOL_COUNT = updates.OPENCRAB_MCP_TOOL_COUNT;
+  process.env.OPENCRAB_MCP_TOOL_NAMES = updates.OPENCRAB_MCP_TOOL_NAMES;
+  return { tools, toolNames };
 }
 
 async function ingestCloudText(payload = {}, apiKey = '') {
@@ -417,6 +454,106 @@ async function ingestCloudText(payload = {}, apiKey = '') {
     tool: tool.name,
     result,
   };
+}
+
+async function ingestLocalMcpText(payload = {}, apiKey = '') {
+  const url = 'http://127.0.0.1:8080/mcp';
+  const token = String(apiKey || process.env.OPENCRAB_API_KEY || 'local-opencrab-key').trim();
+  const tools = await testMcpUrl(url, token);
+  const tool = findMcpIngestTool(tools);
+  if (!tool?.name) {
+    throw new Error('Local MCP endpoint does not expose ontology_ingest.');
+  }
+  const args = buildMcpIngestArgs(tool, payload);
+  const result = await callMcpToolAt(url, tool.name, args, token);
+  return {
+    ok: true,
+    mcpUrl: url,
+    tools: getMcpToolNames(tools).length,
+    tool: tool.name,
+    result,
+  };
+}
+
+function normalizeIngestTarget(value) {
+  const normalized = String(value || 'local-api-cloud-mcp').trim().toLowerCase();
+  const aliases = {
+    local: 'local-api',
+    cloud: 'cloud-mcp',
+    both: 'local-api-cloud-mcp',
+  };
+  const target = aliases[normalized] || normalized;
+  const allowed = new Set([
+    'local-api',
+    'local-mcp',
+    'cloud-mcp',
+    'local-api-cloud-mcp',
+    'local-mcp-cloud-mcp',
+    'cloud-mcp-local-api',
+  ]);
+  return allowed.has(target) ? target : 'local-api-cloud-mcp';
+}
+
+function getIngestTargetSteps(target) {
+  switch (normalizeIngestTarget(target)) {
+    case 'local-api':
+      return ['local-api'];
+    case 'local-mcp':
+      return ['local-mcp'];
+    case 'cloud-mcp':
+      return ['cloud-mcp'];
+    case 'local-mcp-cloud-mcp':
+      return ['local-mcp', 'cloud-mcp'];
+    case 'cloud-mcp-local-api':
+      return ['cloud-mcp', 'local-api'];
+    case 'local-api-cloud-mcp':
+    default:
+      return ['local-api', 'cloud-mcp'];
+  }
+}
+
+function ingestTargetUsesLocal(target) {
+  return getIngestTargetSteps(target).some((step) => step.startsWith('local-'));
+}
+
+async function ingestDesktopText(payload = {}, apiKey = '', serviceEnv = {}, target = 'local-api-cloud-mcp') {
+  const ingestTarget = normalizeIngestTarget(target);
+  const steps = getIngestTargetSteps(ingestTarget);
+  const token = String(apiKey || serviceEnv.OPENCRAB_API_KEY || process.env.OPENCRAB_API_KEY || 'local-opencrab-key').trim();
+  const text = String(payload.text || payload.content || '').trim();
+  if (!text) {
+    throw new Error('Text is required for ingest.');
+  }
+  const sourceId = String(payload.sourceId || payload.source_id || `desktop:${Date.now()}`).trim();
+  const sourceType = String(payload.sourceType || payload.source_type || 'desktop').trim();
+  const metadata = compactObject({
+    ...(payload.metadata && typeof payload.metadata === 'object' ? payload.metadata : {}),
+    source_type: sourceType,
+    source_id: sourceId,
+    source_url: payload.sourceUrl || payload.source_url,
+  });
+  const normalizedPayload = {
+    ...payload,
+    text,
+    sourceId,
+    sourceType,
+    metadata,
+  };
+  const result = {};
+  for (const step of steps) {
+    if (step === 'local-api') {
+      result.localApi = await postLocalIngest(token, {
+        text,
+        source_id: sourceId,
+        metadata,
+      });
+    } else if (step === 'local-mcp') {
+      result.localMcp = await ingestLocalMcpText(normalizedPayload, token);
+    } else if (step === 'cloud-mcp') {
+      result.cloudMcp = await ingestCloudText(normalizedPayload);
+    }
+  }
+  return { ok: true, target: ingestTarget, steps, result };
 }
 
 async function saveMcpUrl(app, rootDir, value, apiKey = '') {
@@ -873,12 +1010,30 @@ function normalizeIngestResearchFields(value) {
   return unique.length > 0 ? unique : DEFAULT_INGEST_RESEARCH_FIELDS;
 }
 
+function normalizePositiveInt(value, fallback, min = 1, max = 1000) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(min, Math.min(Math.round(parsed), max));
+}
+
 function getIngestResearchScope(body = {}) {
   const depth = normalizeIngestResearchDepth(body.ingestResearchDepth);
   const fieldIds = normalizeIngestResearchFields(body.ingestResearchFields);
+  const preset = INGEST_RESEARCH_DEPTHS[depth];
+  const sourceCount = normalizePositiveInt(body.ingestSourceCount, preset.sourceCount, 1, 500);
+  const evidencePerClaim = normalizePositiveInt(body.ingestEvidencePerClaim, preset.evidencePerClaim, 1, 20);
+  const searchRounds = normalizePositiveInt(body.ingestSearchRounds, preset.searchRounds, 1, 50);
+  const socialSourceCount = normalizePositiveInt(body.ingestSocialSourceCount, preset.socialSourceCount, 0, 200);
   return {
     depth,
-    ...INGEST_RESEARCH_DEPTHS[depth],
+    ...preset,
+    sourceCount,
+    evidencePerClaim,
+    searchRounds,
+    socialSourceCount,
+    sourceTarget: `${sourceCount}+ sources where available (${preset.sourceTarget})`,
+    evidenceTarget: `${evidencePerClaim}+ evidence items for each major claim when sources exist`,
+    socialTarget: `${socialSourceCount}+ social/community/trend sources when relevant`,
     fieldIds,
     fields: fieldIds
       .map((id) => INGEST_RESEARCH_FIELDS.find((field) => field.id === id))
@@ -916,6 +1071,7 @@ function formatProgressLine(line) {
   if (/^approval:/i.test(cleaned)) return cleaned;
   if (/^sandbox:/i.test(cleaned)) return cleaned;
   if (/^session id:/i.test(cleaned)) return cleaned;
+  if (/^(plan|source discovery|source check|pack writing|verify|status):/i.test(cleaned)) return cleaned.slice(0, 240);
   if (/\b(error|warning|failed)\b/i.test(cleaned)) return cleaned.slice(0, 240);
   if (/^(read|write|edit|apply|patch|search|run|exec|open|thinking|reasoning|update|create|delete|move|list|find|scan|inspect|build|test|verify|commit|tag|push|install|copy|generate|ingest)\b/i.test(cleaned)) return cleaned.slice(0, 240);
   if (/^(reading|writing|editing|applying|searching|running|executing|opening|creating|deleting|moving|listing|finding|scanning|inspecting|building|testing|verifying|committing|tagging|pushing|installing|copying|generating|ingesting)\b/i.test(cleaned)) return cleaned.slice(0, 240);
@@ -1102,13 +1258,8 @@ async function ingestGeneratedPack(app, match, apiKey, serviceEnv = {}, target =
   if (!pack) {
     throw new Error('Generated pack not found.');
   }
-  const ingestTarget = ['local', 'cloud', 'both'].includes(target) ? target : 'local';
-  const wantsLocal = ingestTarget === 'local' || ingestTarget === 'both';
-  const wantsCloud = ingestTarget === 'cloud' || ingestTarget === 'both';
-  const token = String(apiKey || serviceEnv.OPENCRAB_API_KEY || '').trim();
-  if (wantsLocal && !token) {
-    throw new Error('API key is required to ingest a generated pack.');
-  }
+  const ingestTarget = normalizeIngestTarget(target);
+  const token = String(apiKey || serviceEnv.OPENCRAB_API_KEY || process.env.OPENCRAB_API_KEY || 'local-opencrab-key').trim();
   const { text, files } = readPackTextForIngest(pack);
   const sourceId = `opencrab-pack:${pack.taskId || path.basename(pack.zipPath)}`;
   const metadata = {
@@ -1118,30 +1269,20 @@ async function ingestGeneratedPack(app, match, apiKey, serviceEnv = {}, target =
     file_count: files.length,
     files: files.map((file) => file.relativePath),
   };
-  const result = {};
-  if (wantsLocal) {
-    result.local = await postLocalIngest(token, {
-      text,
-      source_id: sourceId,
-      metadata,
-    });
-  }
-  if (wantsCloud) {
-    result.cloud = await ingestCloudText({
-      text,
-      sourceType: 'opencrab_generated_pack',
-      sourceId,
-      title: pack.name || sourceId,
-      metadata,
-    });
-  }
+  const ingest = await ingestDesktopText({
+    text,
+    sourceType: 'opencrab_generated_pack',
+    sourceId,
+    title: pack.name || sourceId,
+    metadata,
+  }, token, serviceEnv, ingestTarget);
   const updated = updateGeneratedPack(app, match, {
     status: 'ingested',
     ingestedAt: new Date().toISOString(),
     ingestTarget,
-    ingestResult: result,
+    ingestResult: ingest.result,
   });
-  return { ok: true, pack: updated, result };
+  return { ok: true, pack: updated, result: ingest.result, target: ingestTarget, steps: ingest.steps };
 }
 
 function dosDateTime(date = new Date()) {
@@ -1371,6 +1512,8 @@ function buildIngestResearchBlock(scope) {
 - Depth: ${activeScope.label} (${activeScope.depth})
 - Source target: ${activeScope.sourceTarget}
 - Evidence target: ${activeScope.evidenceTarget}
+- Search rounds: ${activeScope.searchRounds}
+- Social/community target: ${activeScope.socialTarget}
 - Relationship target: ${activeScope.relationTarget}
 - Output target: ${activeScope.outputTarget}
 - Selected field IDs: ${activeScope.fieldIds.join(', ')}
@@ -1507,6 +1650,8 @@ ${visionBlock}
 
 - You are Codex running from OpenCrab Desktop, modeled after the Codexian CLI workflow.
 - Use the local OpenCrab services and Neo4j connection when the task involves graph, ontology, or ingest work.
+- Work in visible phases and print a short status line before each phase: PLAN, SOURCE DISCOVERY, SOURCE CHECK, PACK WRITING, VERIFY. The desktop app shows these lines in the chat log.
+- For research-heavy pack work, aim for the configured source target, evidence target, social/community target, and search round count before declaring the pack complete. If the target cannot be reached, write a gap report with the reason and the attempted queries/sources.
 - When the task asks for ontology pack creation, market/domain research, source discovery, blocked URL reading, Korean web sources, social platforms, media metadata, GitHub/arXiv/StackOverflow, or public evidence gathering, use the Research Collection instructions above.
 - When the task asks for image data analysis, product/package imagery, visual taxonomy, screenshots, or image-based ontology packs, use the Image Package Analysis instructions above.
 - If creating reusable pack files, use the Pack Output staging directory so OpenCrab Desktop can zip and register the pack automatically.
@@ -1723,6 +1868,10 @@ async function runCodexTaskInBackground({ app, rootDir, log, ensureLocalServices
     env.OPENCRAB_PACK_OUTPUT_DIR = pack.outputDir;
     env.OPENCRAB_INGEST_RESEARCH_DEPTH = ingestResearch.depth;
     env.OPENCRAB_INGEST_RESEARCH_FIELDS = ingestResearch.fieldIds.join(',');
+    env.OPENCRAB_RESEARCH_SOURCE_TARGET = String(ingestResearch.sourceCount);
+    env.OPENCRAB_RESEARCH_EVIDENCE_PER_CLAIM = String(ingestResearch.evidencePerClaim);
+    env.OPENCRAB_RESEARCH_SEARCH_ROUNDS = String(ingestResearch.searchRounds);
+    env.OPENCRAB_RESEARCH_SOCIAL_SOURCE_TARGET = String(ingestResearch.socialSourceCount);
     const promptUrls = extractHttpUrls(requestText);
     env.OPENCRAB_RESEARCH_MODE = promptUrls.length ? 'url' : 'keyword';
     env.OPENCRAB_RESEARCH_QUERY = requestText;
@@ -1738,7 +1887,7 @@ async function runCodexTaskInBackground({ app, rootDir, log, ensureLocalServices
     appendCodexProgress(
       task,
       'system',
-      `Ingest research scope: ${ingestResearch.label} / ${ingestResearch.fieldIds.join(', ')}`,
+      `Ingest research scope: ${ingestResearch.label} / ${ingestResearch.sourceCount}+ sources / ${ingestResearch.searchRounds} rounds / ${ingestResearch.fieldIds.join(', ')}`,
     );
     appendCodexProgress(
       task,
@@ -1796,10 +1945,17 @@ async function runCodexTaskInBackground({ app, rootDir, log, ensureLocalServices
       `model_reasoning_effort="${reasoning}"`,
     ];
 
-    if (permission === 'yolo') {
+    const effectivePermission = process.platform === 'win32' && permission !== 'yolo'
+      ? 'yolo'
+      : permission;
+    if (effectivePermission !== permission) {
+      appendCodexProgress(task, 'system', 'Windows Codex sandbox is not available in this desktop context; using full desktop access for this run.');
+    }
+
+    if (effectivePermission === 'yolo') {
       args.splice(1, 0, '--dangerously-bypass-approvals-and-sandbox');
     } else if (permission === 'auto') {
-      args.splice(1, 0, '--full-auto');
+      args.splice(1, 0, '--sandbox', 'workspace-write');
     } else {
       args.splice(1, 0, '--sandbox', 'workspace-write');
     }
@@ -1812,7 +1968,7 @@ async function runCodexTaskInBackground({ app, rootDir, log, ensureLocalServices
       codexPath,
       model,
       reasoningEffort: reasoning,
-      permissionMode: permission,
+      permissionMode: effectivePermission,
       ingestResearchDepth: ingestResearch.depth,
       ingestResearchFields: ingestResearch.fieldIds,
     });
@@ -2349,6 +2505,42 @@ function createControlHandler({
         const result = await saveMcpUrlFromClipboard(app, rootDir, clipboard, String(body.apiKey || ''));
         const toolNames = getMcpToolNames(result.tools);
         sendJson(response, 200, { ok: true, mcpUrl: redactMcpUrl(result.url), tools: toolNames.length, toolNames, mcpIngestAvailable: hasMcpIngestTool(toolNames) });
+        return;
+      }
+
+      if (request.method === 'POST' && url.pathname === '/desktop/mcp-url/test') {
+        const configuredUrl = currentMcpUrl();
+        if (!configuredUrl) {
+          sendJson(response, 400, { ok: false, error: 'OpenCrab MCP URL is not configured.' });
+          return;
+        }
+        const result = await refreshMcpStatus(app, rootDir, configuredUrl, String(body.apiKey || ''));
+        sendJson(response, 200, {
+          ok: true,
+          mcpUrl: redactMcpUrl(configuredUrl),
+          tools: result.toolNames.length,
+          toolNames: result.toolNames,
+          mcpIngestAvailable: hasMcpIngestTool(result.toolNames),
+          checkedAt: new Date().toISOString(),
+        });
+        return;
+      }
+
+      if (request.method === 'POST' && url.pathname === '/desktop/ingest') {
+        const target = normalizeIngestTarget(String(body.target || 'local-api-cloud-mcp'));
+        let serviceStatus = null;
+        if (ingestTargetUsesLocal(target) && ensureLocalServices) {
+          serviceStatus = await ensureLocalServices();
+        }
+        const result = await ingestDesktopText({
+          text: String(body.text || body.content || ''),
+          sourceType: String(body.sourceType || body.source_type || 'desktop'),
+          sourceId: String(body.sourceId || body.source_id || ''),
+          sourceUrl: String(body.sourceUrl || body.source_url || ''),
+          title: String(body.title || ''),
+          metadata: body.metadata && typeof body.metadata === 'object' ? body.metadata : {},
+        }, String(body.apiKey || ''), getServiceEnv ? getServiceEnv() : {}, target);
+        sendJson(response, 200, { ...result, serviceStatus });
         return;
       }
 

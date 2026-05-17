@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
+import type { MouseEvent as ReactMouseEvent } from 'react'
 import type { AgentAssetResult, CodexStatus, CodexTaskResult, DesktopStatus, GeneratedPack, IngestResearchDepth, IngestResearchField, IngestTarget, LocalServicesStatus, OcNode, SourceType, UpdateStatus } from '../lib/api'
 import {
   checkDesktopUpdate,
@@ -10,9 +11,8 @@ import {
   getDesktopStatus,
   getLocalServicesStatus,
   getPackSettings,
-  ingestCloudSource,
+  ingestDesktopSource,
   ingestGeneratedPack,
-  ingestSource,
   installAgentAssets,
   openGeneratedPack,
   openDesktopRelease,
@@ -26,6 +26,7 @@ import {
   selectPackOutputDir,
   startDesktopOAuth,
   startLocalServices,
+  testDesktopMcpConnection,
 } from '../lib/api'
 
 const SPACES = ['subject', 'resource', 'concept', 'evidence', 'outcome', 'lever', 'policy', 'claim', 'community']
@@ -52,6 +53,32 @@ const INGEST_RESEARCH_FIELD_OPTIONS: Array<{ id: IngestResearchField; label: str
   { id: 'policy', label: 'Policy', prompt: 'What rules or constraints apply?' },
 ]
 const DEFAULT_INGEST_RESEARCH_FIELDS = INGEST_RESEARCH_FIELD_OPTIONS.map((field) => field.id)
+const RESEARCH_PRESETS: Record<IngestResearchDepth, { sources: number; evidence: number; rounds: number; social: number; label: string }> = {
+  quick: { sources: 10, evidence: 1, rounds: 2, social: 2, label: 'Quick' },
+  standard: { sources: 30, evidence: 2, rounds: 4, social: 6, label: 'Standard' },
+  deep: { sources: 70, evidence: 3, rounds: 7, social: 12, label: 'Deep' },
+  exhaustive: { sources: 120, evidence: 4, rounds: 12, social: 25, label: 'Exhaustive' },
+}
+const INGEST_TARGET_OPTIONS: Array<{ value: IngestTarget; label: string }> = [
+  { value: 'local-api-cloud-mcp', label: 'Local API + Cloud MCP' },
+  { value: 'local-api', label: 'Local API only' },
+  { value: 'local-mcp', label: 'Local MCP only' },
+  { value: 'cloud-mcp', label: 'OpenCrab Cloud MCP only' },
+  { value: 'local-mcp-cloud-mcp', label: 'Local MCP + Cloud MCP' },
+  { value: 'cloud-mcp-local-api', label: 'Cloud MCP then Local API' },
+]
+
+function ingestTargetUsesCloud(target: IngestTarget) {
+  return target.includes('cloud')
+}
+
+function ingestTargetUsesLocal(target: IngestTarget) {
+  return target.includes('local')
+}
+
+function ingestTargetLabel(target: IngestTarget) {
+  return INGEST_TARGET_OPTIONS.find((option) => option.value === target)?.label ?? target
+}
 
 interface GraphControls {
   nodeSize: number
@@ -72,10 +99,11 @@ interface Props {
 
 export default function RightPanel({ selectedNode, controls, onControlChange, apiKey, onRefresh }: Props) {
   const [tab, setTab] = useState<'detail' | 'query' | 'ingest' | 'agent' | 'ops'>('detail')
+  const [panelWidth, setPanelWidth] = useState(380)
   const [queryText, setQueryText] = useState('')
   const [queryResults, setQueryResults] = useState<{ node_id: string | null; score?: number; text?: string | null }[]>([])
   const [querying, setQuerying] = useState(false)
-  const [ingestTarget, setIngestTarget] = useState<IngestTarget>('both')
+  const [ingestTarget, setIngestTarget] = useState<IngestTarget>('local-api-cloud-mcp')
   const [ingestSourceType, setIngestSourceType] = useState<SourceType>('obsidian')
   const [ingestToken, setIngestToken] = useState('')
   const [ingestQuery, setIngestQuery] = useState('')
@@ -87,6 +115,7 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
   const [desktopStatus, setDesktopStatus] = useState<DesktopStatus | null>(null)
   const [mcpUrlInput, setMcpUrlInput] = useState('')
   const [mcpApiKeyInput, setMcpApiKeyInput] = useState('')
+  const [mcpConnectionMessage, setMcpConnectionMessage] = useState('')
   const [agentTarget, setAgentTarget] = useState('both')
   const [agentBusy, setAgentBusy] = useState(false)
   const [agentResults, setAgentResults] = useState<AgentAssetResult[]>([])
@@ -94,12 +123,16 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
   const [codexPrompt, setCodexPrompt] = useState('')
   const [codexModel, setCodexModel] = useState('gpt-5.5')
   const [codexReasoning, setCodexReasoning] = useState('high')
-  const [codexPermission, setCodexPermission] = useState('auto')
+  const [codexPermission, setCodexPermission] = useState('yolo')
   const [codexEnsureServices, setCodexEnsureServices] = useState(true)
   const [codexUseResearch, setCodexUseResearch] = useState(true)
   const [codexUseVision, setCodexUseVision] = useState(true)
   const [codexPackageOutput, setCodexPackageOutput] = useState(true)
   const [codexIngestDepth, setCodexIngestDepth] = useState<IngestResearchDepth>('standard')
+  const [codexSourceCount, setCodexSourceCount] = useState(RESEARCH_PRESETS.standard.sources)
+  const [codexEvidencePerClaim, setCodexEvidencePerClaim] = useState(RESEARCH_PRESETS.standard.evidence)
+  const [codexSearchRounds, setCodexSearchRounds] = useState(RESEARCH_PRESETS.standard.rounds)
+  const [codexSocialSourceCount, setCodexSocialSourceCount] = useState(RESEARCH_PRESETS.standard.social)
   const [codexIngestFields, setCodexIngestFields] = useState<IngestResearchField[]>(DEFAULT_INGEST_RESEARCH_FIELDS)
   const [packOutputDir, setPackOutputDir] = useState('')
   const [packBusy, setPackBusy] = useState(false)
@@ -120,6 +153,17 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
     const timer = setInterval(() => void refreshLocalServices(), 15000)
     return () => clearInterval(timer)
   }, [])
+
+  useEffect(() => {
+    const saved = Number(localStorage.getItem('opencrab_right_panel_width') || '')
+    if (Number.isFinite(saved) && saved >= 320) {
+      setPanelWidth(Math.min(saved, Math.max(360, window.innerWidth - 320)))
+    }
+  }, [])
+
+  useEffect(() => {
+    localStorage.setItem('opencrab_right_panel_width', String(panelWidth))
+  }, [panelWidth])
 
   useEffect(() => {
     if (!codexBusy || !codexResult?.taskId || isCodexTerminalStatus(codexResult.status)) {
@@ -168,6 +212,32 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
   function showToast(msg: string, type: 'success' | 'error' = 'success') {
     setToast({ msg, type })
     setTimeout(() => setToast(null), 3000)
+  }
+
+  function beginPanelResize(event: ReactMouseEvent<HTMLDivElement>) {
+    event.preventDefault()
+    const startX = event.clientX
+    const startWidth = panelWidth
+    const maxWidth = Math.max(360, window.innerWidth - 320)
+    const onMove = (moveEvent: MouseEvent) => {
+      const nextWidth = Math.max(320, Math.min(maxWidth, startWidth + startX - moveEvent.clientX))
+      setPanelWidth(nextWidth)
+    }
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
+
+  function applyResearchPreset(depth: IngestResearchDepth) {
+    const preset = RESEARCH_PRESETS[depth]
+    setCodexIngestDepth(depth)
+    setCodexSourceCount(preset.sources)
+    setCodexEvidencePerClaim(preset.evidence)
+    setCodexSearchRounds(preset.rounds)
+    setCodexSocialSourceCount(preset.social)
   }
 
   async function refreshDesktopStatus() {
@@ -223,24 +293,20 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
   async function handleIngest() {
     if (!ingestToken.trim()) return
     setIngesting(true)
-    const wantsLocal = ingestTarget === 'local' || ingestTarget === 'both'
-    const wantsCloud = ingestTarget === 'cloud' || ingestTarget === 'both'
+    const wantsLocal = ingestTargetUsesLocal(ingestTarget)
+    const wantsCloud = ingestTargetUsesCloud(ingestTarget)
     setIngestPhase(wantsLocal ? 'starting' : 'cloud')
     try {
       if (wantsLocal) {
         const status = await startLocalServices()
         setServiceStatus(status)
-        setIngestPhase('importing')
-        await ingestSource(apiKey, ingestSourceType, ingestToken, { sourceId: ingestQuery || undefined })
       }
-      if (wantsCloud) {
-        setIngestPhase('cloud')
-        await ingestCloudSource(ingestSourceType, ingestToken, {
-          sourceId: ingestQuery || undefined,
-          title: ingestQuery || 'Desktop ingest',
-        })
-      }
-      showToast(`Ingest complete (${ingestTarget === 'both' ? 'local + cloud' : ingestTarget})`)
+      setIngestPhase(wantsCloud && !wantsLocal ? 'cloud' : 'importing')
+      await ingestDesktopSource(ingestTarget, apiKey, ingestSourceType, ingestToken, {
+        sourceId: ingestQuery || undefined,
+        title: ingestQuery || 'Desktop ingest',
+      })
+      showToast(`Ingest complete (${ingestTargetLabel(ingestTarget)})`)
       setIngestToken('')
       setIngestQuery('')
       if (wantsLocal) onRefresh()
@@ -271,6 +337,7 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
     try {
       const result = await saveDesktopMcpUrl(mcpUrlInput.trim(), mcpApiKeyInput.trim())
       showToast(`MCP ready: ${result.tools} tools${result.mcpIngestAvailable ? ', ingest ready' : ''}`)
+      setMcpConnectionMessage(`Connected: ${result.tools} tools, ingest ${result.mcpIngestAvailable ? 'ready' : 'missing'}`)
       setMcpUrlInput('')
       setMcpApiKeyInput('')
       await refreshDesktopStatus()
@@ -286,9 +353,26 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
     try {
       const result = await saveDesktopMcpUrlFromClipboard(mcpApiKeyInput.trim())
       showToast(`MCP ready: ${result.tools} tools${result.mcpIngestAvailable ? ', ingest ready' : ''}`)
+      setMcpConnectionMessage(`Connected from clipboard: ${result.tools} tools, ingest ${result.mcpIngestAvailable ? 'ready' : 'missing'}`)
       setMcpApiKeyInput('')
       await refreshDesktopStatus()
     } catch (error) {
+      showToast(String(error), 'error')
+    } finally {
+      setAgentBusy(false)
+    }
+  }
+
+  async function handleTestMcpUrl() {
+    setAgentBusy(true)
+    try {
+      const result = await testDesktopMcpConnection(mcpApiKeyInput.trim())
+      const sampleTools = (result.toolNames || []).slice(0, 5).join(', ')
+      setMcpConnectionMessage(`Last test: ${result.tools} tools, ingest ${result.mcpIngestAvailable ? 'ready' : 'missing'}${sampleTools ? ` (${sampleTools})` : ''}`)
+      showToast(`MCP test complete: ${result.tools} tools`)
+      await refreshDesktopStatus()
+    } catch (error) {
+      setMcpConnectionMessage(String(error))
       showToast(String(error), 'error')
     } finally {
       setAgentBusy(false)
@@ -338,6 +422,10 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
         packOutputDir,
         ingestResearchDepth: codexIngestDepth,
         ingestResearchFields: codexIngestFields,
+        ingestSourceCount: codexSourceCount,
+        ingestEvidencePerClaim: codexEvidencePerClaim,
+        ingestSearchRounds: codexSearchRounds,
+        ingestSocialSourceCount: codexSocialSourceCount,
       })
       setCodexResult(result)
       showToast('Codex task started')
@@ -438,14 +526,14 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
   async function handleIngestGeneratedPack(path: string) {
     setPackIngestingPath(path)
     try {
-      const wantsLocal = ingestTarget === 'local' || ingestTarget === 'both'
+      const wantsLocal = ingestTargetUsesLocal(ingestTarget)
       if (wantsLocal) {
         await startLocalServices()
       }
       await ingestGeneratedPack(path, apiKey, ingestTarget)
       await refreshGeneratedPacks()
       if (wantsLocal) onRefresh()
-      showToast(`Generated pack ingested (${ingestTarget === 'both' ? 'local + cloud' : ingestTarget})`)
+      showToast(`Generated pack ingested (${ingestTargetLabel(ingestTarget)})`)
     } catch (error) {
       showToast(String(error), 'error')
     } finally {
@@ -495,7 +583,7 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
     </div>
   )
 
-  const ingestNeedsCloud = ingestTarget === 'cloud' || ingestTarget === 'both'
+  const ingestNeedsCloud = ingestTargetUsesCloud(ingestTarget)
   const cloudIngestReady = Boolean(desktopStatus?.mcpUrlConfigured && desktopStatus?.mcpIngestAvailable)
   const cloudStatusText = !desktopStatus?.mcpUrlConfigured
     ? 'not connected'
@@ -506,16 +594,31 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
   return (
     <div
       style={{
-        width: 260,
-        minWidth: 260,
+        width: panelWidth,
+        minWidth: panelWidth,
+        flexBasis: panelWidth,
+        flexShrink: 0,
         background: '#1a1a1a',
         borderLeft: '1px solid rgba(248,197,55,0.15)',
         display: 'flex',
         flexDirection: 'column',
         height: '100%',
         overflow: 'hidden',
+        position: 'relative',
       }}
     >
+      <div
+        onMouseDown={beginPanelResize}
+        style={{
+          position: 'absolute',
+          left: -4,
+          top: 0,
+          width: 8,
+          height: '100%',
+          cursor: 'col-resize',
+          zIndex: 5,
+        }}
+      />
       <div style={{ display: 'flex', borderBottom: '1px solid rgba(248,197,55,0.15)' }}>
         {(['detail', 'query', 'ingest', 'agent', 'ops'] as const).map((item) => (
           <button
@@ -649,9 +752,9 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
                 onChange={(event) => setIngestTarget(event.target.value as IngestTarget)}
                 style={{ fontSize: 12 }}
               >
-                <option value="both">Local + OpenCrab Cloud</option>
-                <option value="local">Local only</option>
-                <option value="cloud">OpenCrab Cloud only</option>
+                {INGEST_TARGET_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
               </select>
               <div style={{ marginTop: 5, color: cloudIngestReady ? '#8ec07c' : '#fb4934', fontSize: 10, lineHeight: 1.4 }}>
                 OpenCrab MCP: {cloudStatusText}
@@ -807,9 +910,32 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
             <button className="btn-gold" style={{ width: '100%', marginBottom: 14 }} onClick={handleSaveMcpUrl} disabled={agentBusy || !mcpUrlInput.trim()}>
               Save MCP URL
             </button>
-            <button className="btn-gold" style={{ width: '100%', marginBottom: 14 }} onClick={handleSaveMcpUrlFromClipboard} disabled={agentBusy}>
-              Connect Copied MCP URL
-            </button>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 10 }}>
+              <button className="btn-gold" style={{ fontSize: 10, padding: '5px 8px' }} onClick={handleSaveMcpUrlFromClipboard} disabled={agentBusy}>
+                Connect Clipboard
+              </button>
+              <button className="btn-gold" style={{ fontSize: 10, padding: '5px 8px' }} onClick={handleTestMcpUrl} disabled={agentBusy || !desktopStatus?.mcpUrlConfigured}>
+                Test MCP
+              </button>
+            </div>
+            {(mcpConnectionMessage || desktopStatus?.mcpToolNames?.length) && (
+              <div
+                className="mono"
+                style={{
+                  padding: '6px 7px',
+                  background: '#151515',
+                  border: '1px solid #2e2e2e',
+                  borderRadius: 4,
+                  color: cloudIngestReady ? '#8ec07c' : '#bdae93',
+                  fontSize: 10,
+                  lineHeight: 1.45,
+                  wordBreak: 'break-word',
+                  marginBottom: 12,
+                }}
+              >
+                {mcpConnectionMessage || `Tools: ${(desktopStatus?.mcpToolNames || []).slice(0, 6).join(', ')}`}
+              </div>
+            )}
 
             <div style={{ marginBottom: 8 }}>
               <label style={{ fontSize: 11, color: '#7c6f64', display: 'block', marginBottom: 4 }}>Install target</label>
@@ -896,14 +1022,64 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
               <select
                 className="input-dark"
                 value={codexIngestDepth}
-                onChange={(event) => setCodexIngestDepth(event.target.value as IngestResearchDepth)}
+                onChange={(event) => applyResearchPreset(event.target.value as IngestResearchDepth)}
                 style={{ fontSize: 11, marginBottom: 6 }}
               >
-                <option value="quick">Quick: 3-5 sources</option>
-                <option value="standard">Standard: 8-15 sources</option>
-                <option value="deep">Deep: 15-35 sources</option>
-                <option value="exhaustive">Exhaustive: 35+ sources</option>
+                <option value="quick">Quick preset</option>
+                <option value="standard">Standard preset</option>
+                <option value="deep">Deep preset</option>
+                <option value="exhaustive">Exhaustive preset</option>
               </select>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 8 }}>
+                <label style={{ fontSize: 10, color: '#7c6f64' }}>
+                  Sources
+                  <input
+                    className="input-dark"
+                    type="number"
+                    min={1}
+                    max={500}
+                    value={codexSourceCount}
+                    onChange={(event) => setCodexSourceCount(Number(event.target.value))}
+                    style={{ fontSize: 10, marginTop: 3 }}
+                  />
+                </label>
+                <label style={{ fontSize: 10, color: '#7c6f64' }}>
+                  Evidence
+                  <input
+                    className="input-dark"
+                    type="number"
+                    min={1}
+                    max={20}
+                    value={codexEvidencePerClaim}
+                    onChange={(event) => setCodexEvidencePerClaim(Number(event.target.value))}
+                    style={{ fontSize: 10, marginTop: 3 }}
+                  />
+                </label>
+                <label style={{ fontSize: 10, color: '#7c6f64' }}>
+                  Rounds
+                  <input
+                    className="input-dark"
+                    type="number"
+                    min={1}
+                    max={50}
+                    value={codexSearchRounds}
+                    onChange={(event) => setCodexSearchRounds(Number(event.target.value))}
+                    style={{ fontSize: 10, marginTop: 3 }}
+                  />
+                </label>
+                <label style={{ fontSize: 10, color: '#7c6f64' }}>
+                  Social
+                  <input
+                    className="input-dark"
+                    type="number"
+                    min={0}
+                    max={200}
+                    value={codexSocialSourceCount}
+                    onChange={(event) => setCodexSocialSourceCount(Number(event.target.value))}
+                    style={{ fontSize: 10, marginTop: 3 }}
+                  />
+                </label>
+              </div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 5 }}>
                 {INGEST_RESEARCH_FIELD_OPTIONS.map((field) => (
                   <label
@@ -950,9 +1126,9 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
                 onChange={(event) => setCodexPermission(event.target.value)}
                 style={{ fontSize: 11, marginBottom: 6 }}
               >
-                <option value="review">review</option>
-                <option value="auto">auto</option>
-                <option value="yolo">yolo</option>
+                <option value="yolo">desktop full access</option>
+                <option value="auto">workspace sandbox</option>
+                <option value="review">review sandbox</option>
               </select>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                 <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 10, color: '#7c6f64', whiteSpace: 'nowrap' }}>

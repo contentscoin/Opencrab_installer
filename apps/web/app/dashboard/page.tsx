@@ -5,7 +5,7 @@ import dynamic from 'next/dynamic'
 import FileExplorer from '../../components/FileExplorer'
 import RightPanel from '../../components/RightPanel'
 import type { DesktopStatus, OcNode, OcEdge } from '../../lib/api'
-import { getDesktopStatus, getNodes, getEdges, getStatus, openExternalUrl, saveDesktopMcpUrl, saveDesktopMcpUrlFromClipboard, startDesktopOAuth } from '../../lib/api'
+import { getDesktopStatus, getNodes, getEdges, getStatus, openExternalUrl, saveDesktopMcpUrl, saveDesktopMcpUrlFromClipboard, startDesktopOAuth, testDesktopMcpConnection } from '../../lib/api'
 
 const GraphView = dynamic(() => import('../../components/GraphView'), { ssr: false })
 
@@ -141,6 +141,20 @@ export default function DashboardPage() {
       const result = await saveDesktopMcpUrlFromClipboard(cloudApiKey.trim())
       setCloudApiKey('')
       setCloudMessage(`MCP connected with ${result.tools} tools${result.mcpIngestAvailable ? ', ingest ready' : ''}.`)
+      await refreshDesktopCloudStatus()
+    } catch (error) {
+      setCloudMessage(String(error))
+    } finally {
+      setCloudBusy(false)
+    }
+  }
+
+  async function handleTestCloudMcpUrl() {
+    setCloudBusy(true)
+    try {
+      const result = await testDesktopMcpConnection(cloudApiKey.trim())
+      const sampleTools = (result.toolNames || []).slice(0, 6).join(', ')
+      setCloudMessage(`MCP test ok: ${result.tools} tools, ingest ${result.mcpIngestAvailable ? 'ready' : 'missing'}${sampleTools ? ` (${sampleTools})` : ''}.`)
       await refreshDesktopCloudStatus()
     } catch (error) {
       setCloudMessage(String(error))
@@ -288,6 +302,9 @@ export default function DashboardPage() {
                   </button>
                   <button className="btn-gold" style={{ fontSize: 11, padding: '7px 10px' }} onClick={handleSaveCloudMcpUrlFromClipboard} disabled={cloudBusy}>
                     Connect Copied MCP URL
+                  </button>
+                  <button className="btn-gold" style={{ fontSize: 11, padding: '7px 10px' }} onClick={handleTestCloudMcpUrl} disabled={cloudBusy || !desktopStatus?.mcpUrlConfigured}>
+                    Test MCP
                   </button>
                 </div>
 

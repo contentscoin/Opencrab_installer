@@ -184,7 +184,7 @@ When `Vision` is checked in the Agent tab, the task context points Codex at the 
 
 When `Zip` is checked in the Agent tab, Codex is instructed to write pack artifacts under `codex-workspace/opencrab_data/packs/<task-id>`. After Codex finishes, OpenCrab Desktop automatically creates a `.zip` file in the selected Pack ZIP folder and adds it to the Ingest tab's queue. From there, open the folder or run `Ingest ZIP`; it uses the current Ingest target setting, so generated packs can go to local Neo4j-backed storage, OpenCrab Cloud, or both.
 
-Before running a Codex task, the Agent tab also has an `Ingest research` setting. Choose the depth (`Quick`, `Standard`, `Deep`, or `Exhaustive`) and select which ontology threads Codex should collect before building ingest files: subject, resource, evidence, concept, claim, community, outcome, lever, and policy. These settings are injected into the Codex task file and environment so generated packs include a research matrix, source metadata, confidence notes, and the selected data-value fields.
+Before running a Codex task, the Agent tab also has an `Ingest research` setting. Choose the depth (`Quick`, `Standard`, `Deep`, or `Exhaustive`), adjust the manual source/evidence/search/social counts, and select which ontology threads Codex should collect before building ingest files: subject, resource, evidence, concept, claim, community, outcome, lever, and policy. These settings are injected into the Codex task file and environment so generated packs include a research matrix, source metadata, confidence notes, and the selected data-value fields.
 
 ## Signing And Notarization
 
@@ -337,6 +337,14 @@ apps\desktop\dist\win-unpacked\OpenCrab.exe
 - Shows MCP tool count and whether an ingest-capable tool is available in the Cloud and Agent panels.
 - Adds an Ingest target selector: `Local + OpenCrab Cloud`, `Local only`, or `OpenCrab Cloud only`.
 - Sends generated Codex ZIP packs to the selected ingest target, not only the local API.
+
+### v1.0.18
+
+- Makes the right dashboard panel resizable and persists the selected width.
+- Adds explicit MCP retesting and clearer connection result messages.
+- Expands ingest targets to Local API, Local MCP, OpenCrab Cloud MCP, and combined target flows.
+- Raises research presets and adds manual source, evidence, search round, and social-source controls for Codex pack generation.
+- Uses full desktop Codex access on Windows to avoid `CreateProcessWithLogonW failed: 1326` sandbox failures, while keeping the live task chat log.
 
 ## Attribution
 

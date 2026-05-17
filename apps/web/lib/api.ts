@@ -39,7 +39,13 @@ export interface QueryResult {
 }
 
 export type SourceType = 'obsidian' | 'notion' | 'gdrive' | 'github'
-export type IngestTarget = 'local' | 'cloud' | 'both'
+export type IngestTarget =
+  | 'local-api'
+  | 'local-mcp'
+  | 'cloud-mcp'
+  | 'local-api-cloud-mcp'
+  | 'local-mcp-cloud-mcp'
+  | 'cloud-mcp-local-api'
 export type IngestResearchDepth = 'quick' | 'standard' | 'deep' | 'exhaustive'
 export type IngestResearchField =
   | 'subject'
@@ -265,6 +271,39 @@ export async function ingestCloudSource(
   return data
 }
 
+export async function ingestDesktopSource(
+  target: IngestTarget,
+  apiKey: string,
+  sourceType: SourceType | string,
+  text: string,
+  opts: {
+    sourceId?: string
+    sourceUrl?: string
+    title?: string
+    metadata?: Record<string, unknown>
+  } = {},
+): Promise<{ ok: boolean; target: IngestTarget; steps?: string[]; result?: Record<string, unknown> }> {
+  const r = await fetch(`${desktopBase()}/desktop/ingest`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      target,
+      apiKey,
+      text,
+      sourceType,
+      sourceId: opts.sourceId,
+      sourceUrl: opts.sourceUrl,
+      title: opts.title,
+      metadata: opts.metadata ?? {},
+    }),
+  })
+  const data = await r.json().catch(() => ({}))
+  if (!r.ok || data.ok === false) {
+    throw new Error(data.error || 'Desktop ingest failed')
+  }
+  return data
+}
+
 export async function startLocalServices(): Promise<LocalServicesStatus> {
   const r = await fetch(`${desktopBase()}/desktop/services/start`, {
     method: 'POST',
@@ -411,6 +450,25 @@ export async function saveDesktopMcpUrlFromClipboard(apiKey = ''): Promise<{ mcp
   return { mcpUrl: data.mcpUrl, tools: data.tools, mcpIngestAvailable: data.mcpIngestAvailable }
 }
 
+export async function testDesktopMcpConnection(apiKey = ''): Promise<{ mcpUrl: string; tools: number; toolNames?: string[]; mcpIngestAvailable?: boolean; checkedAt?: string }> {
+  const r = await fetch(`${desktopBase()}/desktop/mcp-url/test`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ apiKey }),
+  })
+  const data = await r.json().catch(() => ({}))
+  if (!r.ok || data.ok === false) {
+    throw new Error(data.error || 'Failed to test MCP URL')
+  }
+  return {
+    mcpUrl: data.mcpUrl,
+    tools: data.tools,
+    toolNames: data.toolNames,
+    mcpIngestAvailable: data.mcpIngestAvailable,
+    checkedAt: data.checkedAt,
+  }
+}
+
 export async function startDesktopOAuth(): Promise<{ authUrl: string; mode?: string }> {
   const r = await fetch(`${desktopBase()}/desktop/oauth/start`, {
     method: 'POST',
@@ -461,6 +519,10 @@ export async function runCodexTask(input: {
   packOutputDir?: string
   ingestResearchDepth?: IngestResearchDepth
   ingestResearchFields?: IngestResearchField[]
+  ingestSourceCount?: number
+  ingestEvidencePerClaim?: number
+  ingestSearchRounds?: number
+  ingestSocialSourceCount?: number
 }): Promise<CodexTaskResult> {
   const r = await fetch(`${desktopBase()}/desktop/codex/task`, {
     method: 'POST',
@@ -540,7 +602,7 @@ export async function openGeneratedPack(path: string): Promise<{ ok: boolean; pa
   return data
 }
 
-export async function ingestGeneratedPack(path: string, apiKey: string, target: IngestTarget = 'local'): Promise<{ ok: boolean; pack: GeneratedPack; result: Record<string, unknown> }> {
+export async function ingestGeneratedPack(path: string, apiKey: string, target: IngestTarget = 'local-api-cloud-mcp'): Promise<{ ok: boolean; pack: GeneratedPack; result: Record<string, unknown> }> {
   const r = await fetch(`${desktopBase()}/desktop/packs/ingest`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
