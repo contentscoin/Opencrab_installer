@@ -4,8 +4,8 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import dynamic from 'next/dynamic'
 import FileExplorer from '../../components/FileExplorer'
 import RightPanel from '../../components/RightPanel'
-import type { OcNode, OcEdge } from '../../lib/api'
-import { getDesktopStatus, getNodes, getEdges, getStatus, openExternalUrl, startDesktopOAuth } from '../../lib/api'
+import type { DesktopStatus, OcNode, OcEdge } from '../../lib/api'
+import { getDesktopStatus, getNodes, getEdges, getStatus, openExternalUrl, saveDesktopMcpUrl, saveDesktopMcpUrlFromClipboard, startDesktopOAuth } from '../../lib/api'
 
 const GraphView = dynamic(() => import('../../components/GraphView'), { ssr: false })
 
@@ -25,7 +25,11 @@ export default function DashboardPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [connected, setConnected] = useState(false)
   const [workspaceTab, setWorkspaceTab] = useState<'graph' | 'cloud'>('graph')
-  const [cloudFrameKey, setCloudFrameKey] = useState(0)
+  const [desktopStatus, setDesktopStatus] = useState<DesktopStatus | null>(null)
+  const [cloudMcpUrl, setCloudMcpUrl] = useState('')
+  const [cloudApiKey, setCloudApiKey] = useState('')
+  const [cloudBusy, setCloudBusy] = useState(false)
+  const [cloudMessage, setCloudMessage] = useState('')
   const [controls, setControls] = useState<GraphControls>({
     nodeSize: 1,
     linkStrength: 0.3,
@@ -43,6 +47,7 @@ export default function DashboardPage() {
       const saved = localStorage.getItem('oc_api_key') || process.env.NEXT_PUBLIC_OPENCRAB_API_KEY || ''
       try {
         const status = await getDesktopStatus()
+        if (!cancelled) setDesktopStatus(status)
         const nextKey = status.localApiKey || saved
         if (!cancelled && nextKey) {
           setApiKey(nextKey)
@@ -96,8 +101,52 @@ export default function DashboardPage() {
     await openExternalUrl(url)
   }
 
+  async function refreshDesktopCloudStatus() {
+    const status = await getDesktopStatus()
+    setDesktopStatus(status)
+  }
+
   async function handleCloudLogin() {
-    await startDesktopOAuth()
+    setCloudBusy(true)
+    try {
+      const result = await startDesktopOAuth()
+      setCloudMessage(result.mode === 'oauth' ? 'OAuth login opened. Waiting for callback.' : 'Browser login opened. Copy your MCP URL after login, then connect it here.')
+      setTimeout(() => void refreshDesktopCloudStatus(), 2500)
+    } catch (error) {
+      setCloudMessage(String(error))
+    } finally {
+      setCloudBusy(false)
+    }
+  }
+
+  async function handleSaveCloudMcpUrl() {
+    if (!cloudMcpUrl.trim()) return
+    setCloudBusy(true)
+    try {
+      const result = await saveDesktopMcpUrl(cloudMcpUrl.trim(), cloudApiKey.trim())
+      setCloudMcpUrl('')
+      setCloudApiKey('')
+      setCloudMessage(`MCP connected with ${result.tools} tools.`)
+      await refreshDesktopCloudStatus()
+    } catch (error) {
+      setCloudMessage(String(error))
+    } finally {
+      setCloudBusy(false)
+    }
+  }
+
+  async function handleSaveCloudMcpUrlFromClipboard() {
+    setCloudBusy(true)
+    try {
+      const result = await saveDesktopMcpUrlFromClipboard(cloudApiKey.trim())
+      setCloudApiKey('')
+      setCloudMessage(`MCP connected with ${result.tools} tools.`)
+      await refreshDesktopCloudStatus()
+    } catch (error) {
+      setCloudMessage(String(error))
+    } finally {
+      setCloudBusy(false)
+    }
   }
 
   return (
@@ -172,8 +221,8 @@ export default function DashboardPage() {
             </>
           ) : (
             <>
-              <button className="btn-gold" style={{ fontSize: 11, padding: '4px 10px' }} onClick={() => setCloudFrameKey((value) => value + 1)}>
-                Reload
+              <button className="btn-gold" style={{ fontSize: 11, padding: '4px 10px' }} onClick={refreshDesktopCloudStatus}>
+                Refresh
               </button>
               <button
                 className="btn-gold"
@@ -182,7 +231,7 @@ export default function DashboardPage() {
               >
                 Open Browser
               </button>
-              <button className="btn-gold" style={{ fontSize: 11, padding: '4px 10px' }} onClick={handleCloudLogin}>
+              <button className="btn-gold" style={{ fontSize: 11, padding: '4px 10px' }} onClick={handleCloudLogin} disabled={cloudBusy}>
                 Login
               </button>
             </>
@@ -209,40 +258,69 @@ export default function DashboardPage() {
                 width: '100%',
                 height: '100%',
                 background: '#111',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                padding: 24,
               }}
             >
-              <iframe
-                key={cloudFrameKey}
-                src="https://opencrab.sh"
-                title="opencrab.sh"
-                referrerPolicy="no-referrer-when-downgrade"
-                sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
-                style={{
-                  width: '100%',
-                  height: '100%',
-                  border: 'none',
-                  background: '#fff',
-                }}
-              />
               <div
                 style={{
-                  position: 'absolute',
-                  right: 16,
-                  bottom: 16,
-                  display: 'flex',
-                  gap: 8,
-                  padding: 10,
-                  border: '1px solid rgba(248,197,55,0.25)',
-                  borderRadius: 6,
-                  background: 'rgba(17,17,17,0.92)',
+                  width: 'min(680px, 100%)',
+                  border: '1px solid rgba(248,197,55,0.24)',
+                  borderRadius: 8,
+                  background: '#171717',
+                  padding: 18,
+                  boxShadow: '0 18px 60px rgba(0,0,0,0.28)',
                 }}
               >
-                <button className="btn-gold" style={{ fontSize: 11, padding: '6px 10px' }} onClick={handleCloudLogin}>
-                  Login in Browser
+                <div style={{ fontSize: 13, color: '#f8c537', fontWeight: 700, marginBottom: 6 }}>OpenCrab Cloud Connection</div>
+                <div style={{ fontSize: 12, lineHeight: 1.55, color: '#bdae93', marginBottom: 14 }}>
+                  opencrab.sh login runs in your system browser. Browser cookies are not shared with the desktop app, so connect the app with your OpenCrab MCP URL after login.
+                </div>
+
+                <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+                  <button className="btn-gold" style={{ fontSize: 11, padding: '7px 10px' }} onClick={handleCloudLogin} disabled={cloudBusy}>
+                    Login in Browser
+                  </button>
+                  <button className="btn-gold" style={{ fontSize: 11, padding: '7px 10px' }} onClick={() => handleOpenCloud()}>
+                    Open opencrab.sh
+                  </button>
+                  <button className="btn-gold" style={{ fontSize: 11, padding: '7px 10px' }} onClick={handleSaveCloudMcpUrlFromClipboard} disabled={cloudBusy}>
+                    Connect Copied MCP URL
+                  </button>
+                </div>
+
+                <div style={{ fontSize: 10, color: '#555', marginBottom: 4, letterSpacing: '0.06em' }}>MCP ENDPOINT</div>
+                <div style={{ color: desktopStatus?.mcpUrlConfigured ? '#8ec07c' : '#fb4934', fontSize: 11, wordBreak: 'break-all', marginBottom: 10 }}>
+                  {desktopStatus?.mcpUrlConfigured ? desktopStatus.mcpUrl : 'not connected'}
+                </div>
+
+                <input
+                  className="input-dark mono"
+                  value={cloudMcpUrl}
+                  onChange={(event) => setCloudMcpUrl(event.target.value)}
+                  placeholder="Paste https://opencrab.sh/api/mcp/..."
+                  type="password"
+                  style={{ fontSize: 11, marginBottom: 6 }}
+                />
+                <input
+                  className="input-dark mono"
+                  value={cloudApiKey}
+                  onChange={(event) => setCloudApiKey(event.target.value)}
+                  placeholder="Bearer token (optional)"
+                  type="password"
+                  style={{ fontSize: 11, marginBottom: 10 }}
+                />
+                <button className="btn-gold" style={{ width: '100%', marginBottom: 10 }} onClick={handleSaveCloudMcpUrl} disabled={cloudBusy || !cloudMcpUrl.trim()}>
+                  Save MCP URL
                 </button>
-                <button className="btn-gold" style={{ fontSize: 11, padding: '6px 10px' }} onClick={() => handleOpenCloud()}>
-                  Open opencrab.sh
-                </button>
+
+                {cloudMessage && (
+                  <div style={{ color: cloudMessage.startsWith('Error') ? '#fb4934' : '#8ec07c', fontSize: 11, lineHeight: 1.45 }}>
+                    {cloudMessage}
+                  </div>
+                )}
               </div>
             </div>
           )}

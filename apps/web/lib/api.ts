@@ -364,7 +364,20 @@ export async function saveDesktopMcpUrl(url: string, apiKey = ''): Promise<{ mcp
   return { mcpUrl: data.mcpUrl, tools: data.tools }
 }
 
-export async function startDesktopOAuth(): Promise<{ authUrl: string }> {
+export async function saveDesktopMcpUrlFromClipboard(apiKey = ''): Promise<{ mcpUrl: string; tools: number }> {
+  const r = await fetch(`${desktopBase()}/desktop/mcp-url/clipboard`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ apiKey }),
+  })
+  const data = await r.json().catch(() => ({}))
+  if (!r.ok || data.ok === false) {
+    throw new Error(data.error || 'Failed to save MCP URL from clipboard')
+  }
+  return { mcpUrl: data.mcpUrl, tools: data.tools }
+}
+
+export async function startDesktopOAuth(): Promise<{ authUrl: string; mode?: string }> {
   const r = await fetch(`${desktopBase()}/desktop/oauth/start`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -374,7 +387,7 @@ export async function startDesktopOAuth(): Promise<{ authUrl: string }> {
   if (!r.ok || data.ok === false) {
     throw new Error(data.error || 'Failed to start OAuth')
   }
-  return { authUrl: data.authUrl }
+  return { authUrl: data.authUrl, mode: data.mode }
 }
 
 export async function installAgentAssets(target: string): Promise<AgentAssetResult[]> {

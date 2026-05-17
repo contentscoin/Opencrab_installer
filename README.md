@@ -106,7 +106,7 @@ OpenCrab local app endpoints:
 Desktop dashboard controls:
 
 - `Local` tab: shows the local graph workspace.
-- `opencrab.sh` tab: previews the cloud OpenCrab page and opens sign-in flows in the system browser, because Google/OAuth providers commonly block embedded Electron frames.
+- `opencrab.sh` tab: opens cloud login in the system browser and connects the desktop app by validating a pasted or copied MCP URL, because OAuth providers commonly block embedded Electron frames.
 - `Ops` tab: checks local service health, starts services, restarts graph services, restarts the web UI, checks GitHub Releases for updates, and opens the latest release page.
 
 ## opencrab.sh Integration
@@ -316,6 +316,13 @@ apps\desktop\dist\win-unpacked\OpenCrab.exe
 - Adds `opencrab export-neo4j-pack` for exporting a verified Neo4j graph snapshot into `neo4j/opencrab_ingest.jsonl`.
 - Improves hybrid retrieval for Korean relation questions, BM25 anchors, graph expansion, and reranking consensus.
 - Preserves the desktop installer's Docker/Neo4j orchestration instead of switching the fork to upstream local-only storage.
+
+### v1.0.15
+
+- Replaces the embedded `opencrab.sh` login frame with a browser-first cloud connection panel to avoid OAuth/403 iframe blocks.
+- Changes the default login action to open `opencrab.sh` in the system browser instead of pretending the site supports desktop OAuth callbacks.
+- Adds `Connect Copied MCP URL`, which reads an OpenCrab MCP URL from the clipboard, validates it with `tools/list`, and stores it for Codex/agent assets.
+- Adds the same copied-MCP connection path to the Agent tab.
 
 ## Attribution
 

@@ -20,6 +20,7 @@ import {
   restartWebUi,
   runCodexTask,
   saveDesktopMcpUrl,
+  saveDesktopMcpUrlFromClipboard,
   savePackSettings,
   selectPackOutputDir,
   startDesktopOAuth,
@@ -267,11 +268,25 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
     }
   }
 
+  async function handleSaveMcpUrlFromClipboard() {
+    setAgentBusy(true)
+    try {
+      const result = await saveDesktopMcpUrlFromClipboard(mcpApiKeyInput.trim())
+      showToast(`MCP ready: ${result.tools} tools`)
+      setMcpApiKeyInput('')
+      await refreshDesktopStatus()
+    } catch (error) {
+      showToast(String(error), 'error')
+    } finally {
+      setAgentBusy(false)
+    }
+  }
+
   async function handleOAuthStart() {
     setAgentBusy(true)
     try {
-      await startDesktopOAuth()
-      showToast('OAuth browser opened')
+      const result = await startDesktopOAuth()
+      showToast(result.mode === 'oauth' ? 'OAuth browser opened' : 'Browser login opened')
       setTimeout(() => void refreshDesktopStatus(), 2500)
     } catch (error) {
       showToast(String(error), 'error')
@@ -723,8 +738,12 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
             </div>
 
             <button className="btn-gold" style={{ width: '100%', marginBottom: 8 }} onClick={handleOAuthStart} disabled={agentBusy}>
-              Connect OAuth
+              Open opencrab.sh Login
             </button>
+
+            <div style={{ color: '#7c6f64', fontSize: 11, lineHeight: 1.45, marginBottom: 8 }}>
+              Browser login does not share cookies with the desktop app. Copy your OpenCrab MCP URL after login, then connect it here.
+            </div>
 
             <input
               className="input-dark mono"
@@ -744,6 +763,9 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
             />
             <button className="btn-gold" style={{ width: '100%', marginBottom: 14 }} onClick={handleSaveMcpUrl} disabled={agentBusy || !mcpUrlInput.trim()}>
               Save MCP URL
+            </button>
+            <button className="btn-gold" style={{ width: '100%', marginBottom: 14 }} onClick={handleSaveMcpUrlFromClipboard} disabled={agentBusy}>
+              Connect Copied MCP URL
             </button>
 
             <div style={{ marginBottom: 8 }}>

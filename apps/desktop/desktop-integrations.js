@@ -259,7 +259,15 @@ function oauthRedirectUri(controlPort) {
 }
 
 function buildOAuthUrl(controlPort) {
-  const authorizeUrl = process.env.OPENCRAB_OAUTH_AUTHORIZE_URL || 'https://opencrab.sh/sign-in';
+  const authorizeUrl = process.env.OPENCRAB_OAUTH_AUTHORIZE_URL || '';
+  if (!authorizeUrl) {
+    pendingOAuth = null;
+    return {
+      authUrl: process.env.OPENCRAB_LOGIN_URL || 'https://opencrab.sh/sign-in',
+      mode: 'browser-login',
+    };
+  }
+
   const state = randomBase64Url(18);
   const verifier = randomBase64Url(48);
   const redirectUri = oauthRedirectUri(controlPort);
@@ -279,7 +287,10 @@ function buildOAuthUrl(controlPort) {
   url.searchParams.set('code_challenge_method', 'S256');
   url.searchParams.set('desktop_callback', redirectUri);
   url.searchParams.set('loopback_callback', `http://127.0.0.1:${controlPort}/desktop/oauth/callback`);
-  return url.toString();
+  return {
+    authUrl: url.toString(),
+    mode: 'oauth',
+  };
 }
 
 function extractMcpUrl(payload) {
@@ -337,6 +348,34 @@ async function handleOAuthCallback(app, rootDir, rawUrl) {
   const result = await saveMcpUrl(app, rootDir, mcpUrl, callbackUrl.searchParams.get('api_key') || '');
   pendingOAuth = null;
   return result;
+}
+
+function extractMcpUrlFromText(value) {
+  const text = String(value || '').trim();
+  if (!text) {
+    return '';
+  }
+
+  try {
+    const parsed = new URL(text);
+    if (/\/mcp(?:\/|$)/i.test(parsed.pathname)) {
+      return parsed.toString();
+    }
+  } catch {
+    // Fall through to scanning free-form text.
+  }
+
+  const matches = text.match(/https?:\/\/[^\s"'<>)]*\/mcp\/?[^\s"'<>)]*/gi) || [];
+  return matches[0] || '';
+}
+
+async function saveMcpUrlFromClipboard(app, rootDir, clipboard, apiKey = '') {
+  const text = clipboard?.readText ? clipboard.readText() : '';
+  const mcpUrl = extractMcpUrlFromText(text);
+  if (!mcpUrl) {
+    throw new Error('Clipboard does not contain an OpenCrab MCP URL.');
+  }
+  return saveMcpUrl(app, rootDir, mcpUrl, apiKey);
 }
 
 function posixRelative(from, to) {
@@ -1952,6 +1991,7 @@ function readJsonBody(request) {
 
 function createControlHandler({
   app,
+  clipboard,
   dialog,
   shell,
   rootDir,
@@ -2050,10 +2090,18 @@ function createControlHandler({
         return;
       }
 
+      if (request.method === 'POST' && url.pathname === '/desktop/mcp-url/clipboard') {
+        const result = await saveMcpUrlFromClipboard(app, rootDir, clipboard, String(body.apiKey || ''));
+        sendJson(response, 200, { ok: true, mcpUrl: redactMcpUrl(result.url), tools: result.tools.length });
+        return;
+      }
+
       if (request.method === 'POST' && url.pathname === '/desktop/oauth/start') {
-        const authUrl = buildOAuthUrl(getPort());
+        const login = buildOAuthUrl(getPort());
+        const authUrl = typeof login === 'string' ? login : login.authUrl;
+        const mode = typeof login === 'string' ? 'oauth' : login.mode;
         await shell.openExternal(authUrl);
-        sendJson(response, 200, { ok: true, authUrl });
+        sendJson(response, 200, { ok: true, authUrl, mode });
         return;
       }
 
@@ -2194,6 +2242,7 @@ function createControlHandler({
 
 function startControlServer({
   app,
+  clipboard,
   dialog,
   shell,
   rootDir,
@@ -2219,6 +2268,7 @@ function startControlServer({
       activePort = port;
       const server = http.createServer(createControlHandler({
         app,
+        clipboard,
         dialog,
         shell,
         rootDir,

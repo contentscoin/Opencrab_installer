@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, shell } = require('electron');
+const { app, BrowserWindow, clipboard, dialog, shell } = require('electron');
 const { spawn } = require('child_process');
 const fs = require('fs');
 const http = require('http');
@@ -27,6 +27,7 @@ const ENV_FILE_KEYS = new Set([
   'OPENCRAB_OAUTH_AUTHORIZE_URL',
   'OPENCRAB_OAUTH_CLIENT_ID',
   'OPENCRAB_OAUTH_TOKEN_URL',
+  'OPENCRAB_LOGIN_URL',
   'NEO4J_MCP_SERVER_COMMAND',
   'NEO4J_MCP_SERVER_ARGS',
   'NEO4J_MCP_SERVER_HEALTH_URL',
@@ -1281,6 +1282,7 @@ async function startServices() {
   activeServiceEnv = buildServiceEnv();
   const controlPort = await startControlServer({
     app,
+    clipboard,
     dialog,
     shell,
     rootDir,
