@@ -18,6 +18,94 @@ const CODEX_TASK_TIMEOUT_MS = 30 * 60 * 1000;
 const CODEX_TASK_HISTORY_LIMIT = 20;
 const CODEX_TASK_MESSAGE_LIMIT = 400;
 const GENERATED_PACKS_LIMIT = 100;
+const INGEST_RESEARCH_FIELDS = [
+  {
+    id: 'subject',
+    label: 'Subject',
+    question: 'Who or what is this about?',
+    capture: 'primary entities, aliases, scope boundaries, and disambiguation notes',
+  },
+  {
+    id: 'resource',
+    label: 'Resource',
+    question: 'What original sources should support this?',
+    capture: 'source URLs, authors, dates, licenses, access notes, and retrieval paths',
+  },
+  {
+    id: 'evidence',
+    label: 'Evidence',
+    question: 'What are the concrete facts or observations?',
+    capture: 'short evidence snippets, measurements, quotes, datasets, and confidence notes',
+  },
+  {
+    id: 'concept',
+    label: 'Concept',
+    question: 'What core concepts define this domain?',
+    capture: 'terms, definitions, categories, synonyms, and concept relationships',
+  },
+  {
+    id: 'claim',
+    label: 'Claim',
+    question: 'What claims or interpretations are possible?',
+    capture: 'claims, counterclaims, assumptions, uncertainty, and evidence links',
+  },
+  {
+    id: 'community',
+    label: 'Community',
+    question: 'Which people or groups are related?',
+    capture: 'organizations, authors, maintainers, users, stakeholders, and affiliations',
+  },
+  {
+    id: 'outcome',
+    label: 'Outcome',
+    question: 'What result is produced?',
+    capture: 'effects, deliverables, use cases, metrics, and downstream consequences',
+  },
+  {
+    id: 'lever',
+    label: 'Lever',
+    question: 'What changes the result?',
+    capture: 'inputs, controls, interventions, dependencies, and causal factors',
+  },
+  {
+    id: 'policy',
+    label: 'Policy',
+    question: 'What rules or constraints apply?',
+    capture: 'laws, standards, licenses, platform rules, limits, risks, and compliance notes',
+  },
+];
+const INGEST_RESEARCH_FIELD_IDS = new Set(INGEST_RESEARCH_FIELDS.map((field) => field.id));
+const DEFAULT_INGEST_RESEARCH_FIELDS = INGEST_RESEARCH_FIELDS.map((field) => field.id);
+const INGEST_RESEARCH_DEPTHS = {
+  quick: {
+    label: 'Quick',
+    sourceTarget: '3-5 credible public sources',
+    evidenceTarget: 'at least 1 evidence item for each major claim',
+    relationTarget: 'direct entity-source-concept links only',
+    outputTarget: 'compact README plus manifest or JSONL records',
+  },
+  standard: {
+    label: 'Standard',
+    sourceTarget: '8-15 credible public sources across primary and secondary material',
+    evidenceTarget: '2 evidence items for each major claim when sources exist',
+    relationTarget: 'entities, concepts, claims, sources, and clear relationships',
+    outputTarget: 'README, manifest, research matrix, and ingest-ready records',
+  },
+  deep: {
+    label: 'Deep',
+    sourceTarget: '15-35 sources with primary-source preference and cross-checking',
+    evidenceTarget: '2-3 evidence items per claim plus counterevidence or uncertainty notes',
+    relationTarget: 'multi-hop relationships, communities, outcomes, levers, and policies',
+    outputTarget: 'full pack structure with evidence tables, relationship files, and confidence fields',
+  },
+  exhaustive: {
+    label: 'Exhaustive',
+    sourceTarget: '35+ sources where available, including primary, historical, technical, and policy material',
+    evidenceTarget: 'triangulated evidence, contradictions, provenance, gaps, and confidence scoring',
+    relationTarget: 'complete ontology threads across all selected fields with causal and policy constraints',
+    outputTarget: 'reviewable ontology pack with source ledger, research matrix, entities, claims, Cypher or JSONL, and gap report',
+  },
+};
 
 let controlServer;
 let pendingOAuth = null;
@@ -518,6 +606,37 @@ function normalizeCodexModel(value) {
   return /^[A-Za-z0-9._:-]+$/.test(normalized) ? normalized : DEFAULT_CODEX_MODEL;
 }
 
+function normalizeIngestResearchDepth(value) {
+  const normalized = String(value || 'standard').trim().toLowerCase();
+  return Object.prototype.hasOwnProperty.call(INGEST_RESEARCH_DEPTHS, normalized)
+    ? normalized
+    : 'standard';
+}
+
+function normalizeIngestResearchFields(value) {
+  const raw = Array.isArray(value)
+    ? value
+    : String(value || '').split(/[\s,]+/);
+  const fields = raw
+    .map((item) => String(item || '').trim().toLowerCase())
+    .filter((item) => INGEST_RESEARCH_FIELD_IDS.has(item));
+  const unique = [...new Set(fields)];
+  return unique.length > 0 ? unique : DEFAULT_INGEST_RESEARCH_FIELDS;
+}
+
+function getIngestResearchScope(body = {}) {
+  const depth = normalizeIngestResearchDepth(body.ingestResearchDepth);
+  const fieldIds = normalizeIngestResearchFields(body.ingestResearchFields);
+  return {
+    depth,
+    ...INGEST_RESEARCH_DEPTHS[depth],
+    fieldIds,
+    fields: fieldIds
+      .map((id) => INGEST_RESEARCH_FIELDS.find((field) => field.id === id))
+      .filter(Boolean),
+  };
+}
+
 function normalizeTimeoutMs(value) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) return CODEX_TASK_TIMEOUT_MS;
@@ -973,6 +1092,35 @@ function getPackContext(app, cwd, taskId, body) {
   };
 }
 
+function buildIngestResearchBlock(scope) {
+  const activeScope = scope || getIngestResearchScope();
+  const fields = (activeScope.fields || [])
+    .map((field) => `- ${field.label} (${field.id}): ${field.question} Capture ${field.capture}.`)
+    .join('\n');
+
+  return `
+## Ingest Data Research Scope
+
+- Depth: ${activeScope.label} (${activeScope.depth})
+- Source target: ${activeScope.sourceTarget}
+- Evidence target: ${activeScope.evidenceTarget}
+- Relationship target: ${activeScope.relationTarget}
+- Output target: ${activeScope.outputTarget}
+- Selected field IDs: ${activeScope.fieldIds.join(', ')}
+
+### Required Research Threads
+
+${fields}
+
+### Ingest Value Rules
+
+- Before writing ingest files, evaluate candidate data values against the selected research threads.
+- Keep source metadata next to every data value: URL/path, title, author or owner when known, published or retrieved date, and confidence.
+- Put a research matrix in the pack when possible, such as research-matrix.json or research-matrix.csv, with columns for field, value, evidence, source, confidence, and notes.
+- Mark unknown, weakly sourced, conflicting, or inferred values explicitly instead of presenting them as facts.
+`;
+}
+
 function buildCodexTaskContent({
   task,
   taskId,
@@ -985,6 +1133,7 @@ function buildCodexTaskContent({
   research,
   vision,
   pack,
+  ingestResearch,
 }) {
   const neo4j = serviceStatus?.neo4j || {};
   const localMcp = 'http://127.0.0.1:8080/mcp';
@@ -1073,6 +1222,7 @@ ${task}
 - Neo4j password: ${serviceEnv.NEO4J_PASSWORD || 'opencrab'}
 - Default ingest output directory: ${ingestDir}
 ${packBlock}
+${buildIngestResearchBlock(ingestResearch)}
 ${researchBlock}
 ${visionBlock}
 
@@ -1110,6 +1260,8 @@ function serializeCodexTask(task) {
     model: task.model || '',
     reasoningEffort: task.reasoningEffort || '',
     permissionMode: task.permissionMode || '',
+    ingestResearchDepth: task.ingestResearchDepth || '',
+    ingestResearchFields: task.ingestResearchFields || [],
     progress: task.progress || [],
     messages: task.messages || [],
     finalMessage: task.finalMessage || '',
@@ -1288,9 +1440,12 @@ async function runCodexTaskInBackground({ app, rootDir, log, ensureLocalServices
     const reasoning = normalizeCodexReasoning(body.reasoningEffort || process.env.OPENCRAB_CODEX_REASONING);
     const permission = normalizeCodexPermission(body.permissionMode || process.env.OPENCRAB_CODEX_PERMISSION);
     const timeoutMs = normalizeTimeoutMs(body.timeoutMs);
+    const ingestResearch = getIngestResearchScope(body);
     const pack = getPackContext(app, cwd, task.taskId, body);
     env.OPENCRAB_PACK_WORK_DIR = pack.workDir;
     env.OPENCRAB_PACK_OUTPUT_DIR = pack.outputDir;
+    env.OPENCRAB_INGEST_RESEARCH_DEPTH = ingestResearch.depth;
+    env.OPENCRAB_INGEST_RESEARCH_FIELDS = ingestResearch.fieldIds.join(',');
     const research = getResearchContext(rootDir, env, body.useResearchSkill !== false);
     const vision = getVisionContext(rootDir, env, body.useVisionSkill !== false);
     appendCodexProgress(
@@ -1299,6 +1454,11 @@ async function runCodexTaskInBackground({ app, rootDir, log, ensureLocalServices
       pack.enabled
         ? `Pack ZIP output: ${path.join(pack.outputDir, pack.zipName)}`
         : 'Pack ZIP output disabled.',
+    );
+    appendCodexProgress(
+      task,
+      'system',
+      `Ingest research scope: ${ingestResearch.label} / ${ingestResearch.fieldIds.join(', ')}`,
     );
     appendCodexProgress(
       task,
@@ -1325,6 +1485,7 @@ async function runCodexTaskInBackground({ app, rootDir, log, ensureLocalServices
       research,
       vision,
       pack,
+      ingestResearch,
     });
     const outputPath = path.join(path.dirname(taskFile), `opencrab-codex-result-${taskId}.md`);
 
@@ -1365,6 +1526,8 @@ async function runCodexTaskInBackground({ app, rootDir, log, ensureLocalServices
       model,
       reasoningEffort: reasoning,
       permissionMode: permission,
+      ingestResearchDepth: ingestResearch.depth,
+      ingestResearchFields: ingestResearch.fieldIds,
     });
     touchCodexTask(task);
 
@@ -1514,6 +1677,8 @@ function runCodexTask({ app, rootDir, log, ensureLocalServices, getLocalServices
     model: '',
     reasoningEffort: '',
     permissionMode: '',
+    ingestResearchDepth: '',
+    ingestResearchFields: [],
     progress: [],
     messages: [],
     finalMessage: '',

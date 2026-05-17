@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import type { AgentAssetResult, CodexStatus, CodexTaskResult, DesktopStatus, GeneratedPack, LocalServicesStatus, OcNode, SourceType, UpdateStatus } from '../lib/api'
+import type { AgentAssetResult, CodexStatus, CodexTaskResult, DesktopStatus, GeneratedPack, IngestResearchDepth, IngestResearchField, LocalServicesStatus, OcNode, SourceType, UpdateStatus } from '../lib/api'
 import {
   checkDesktopUpdate,
   getGeneratedPacks,
@@ -38,6 +38,18 @@ const SPACE_COLOR: Record<string, string> = {
   claim: '#fe8019',
   community: '#8ec07c',
 }
+const INGEST_RESEARCH_FIELD_OPTIONS: Array<{ id: IngestResearchField; label: string; prompt: string }> = [
+  { id: 'subject', label: 'Subject', prompt: 'Who or what is this about?' },
+  { id: 'resource', label: 'Resource', prompt: 'What original sources support this?' },
+  { id: 'evidence', label: 'Evidence', prompt: 'What concrete facts or observations exist?' },
+  { id: 'concept', label: 'Concept', prompt: 'What core concepts define this domain?' },
+  { id: 'claim', label: 'Claim', prompt: 'What claims or interpretations are possible?' },
+  { id: 'community', label: 'Community', prompt: 'Which people or groups are related?' },
+  { id: 'outcome', label: 'Outcome', prompt: 'What result is produced?' },
+  { id: 'lever', label: 'Lever', prompt: 'What changes the result?' },
+  { id: 'policy', label: 'Policy', prompt: 'What rules or constraints apply?' },
+]
+const DEFAULT_INGEST_RESEARCH_FIELDS = INGEST_RESEARCH_FIELD_OPTIONS.map((field) => field.id)
 
 interface GraphControls {
   nodeSize: number
@@ -84,6 +96,8 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
   const [codexUseResearch, setCodexUseResearch] = useState(true)
   const [codexUseVision, setCodexUseVision] = useState(true)
   const [codexPackageOutput, setCodexPackageOutput] = useState(true)
+  const [codexIngestDepth, setCodexIngestDepth] = useState<IngestResearchDepth>('standard')
+  const [codexIngestFields, setCodexIngestFields] = useState<IngestResearchField[]>(DEFAULT_INGEST_RESEARCH_FIELDS)
   const [packOutputDir, setPackOutputDir] = useState('')
   const [packBusy, setPackBusy] = useState(false)
   const [packIngestingPath, setPackIngestingPath] = useState('')
@@ -294,6 +308,8 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
         useVisionSkill: codexUseVision,
         packageOutput: codexPackageOutput,
         packOutputDir,
+        ingestResearchDepth: codexIngestDepth,
+        ingestResearchFields: codexIngestFields,
       })
       setCodexResult(result)
       showToast('Codex task started')
@@ -408,6 +424,14 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
     } finally {
       setPackIngestingPath('')
     }
+  }
+
+  function toggleCodexIngestField(field: IngestResearchField) {
+    setCodexIngestFields((current) => (
+      current.includes(field)
+        ? current.length > 1 ? current.filter((item) => item !== field) : current
+        : [...current, field]
+    ))
   }
 
   function formatBytes(bytes?: number) {
@@ -804,6 +828,38 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
                 <button className="btn-gold" style={{ fontSize: 10, padding: '4px 8px' }} onClick={handleSavePackOutputDir} disabled={packBusy || !packOutputDir.trim()}>
                   Save
                 </button>
+              </div>
+            </div>
+
+            <div style={{ marginBottom: 8 }}>
+              <label style={{ fontSize: 11, color: '#7c6f64', display: 'block', marginBottom: 4 }}>Ingest research</label>
+              <select
+                className="input-dark"
+                value={codexIngestDepth}
+                onChange={(event) => setCodexIngestDepth(event.target.value as IngestResearchDepth)}
+                style={{ fontSize: 11, marginBottom: 6 }}
+              >
+                <option value="quick">Quick: 3-5 sources</option>
+                <option value="standard">Standard: 8-15 sources</option>
+                <option value="deep">Deep: 15-35 sources</option>
+                <option value="exhaustive">Exhaustive: 35+ sources</option>
+              </select>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 5 }}>
+                {INGEST_RESEARCH_FIELD_OPTIONS.map((field) => (
+                  <label
+                    key={field.id}
+                    title={field.prompt}
+                    style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 10, color: '#7c6f64', whiteSpace: 'nowrap' }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={codexIngestFields.includes(field.id)}
+                      onChange={() => toggleCodexIngestField(field.id)}
+                      style={{ accentColor: '#f8c537' }}
+                    />
+                    {field.label}
+                  </label>
+                ))}
               </div>
             </div>
 

@@ -152,6 +152,8 @@ When `Neo4j` is checked in the Agent tab, OpenCrab Desktop starts the local Neo4
 - `OPENCRAB_PYTHON`
 - `OPENCRAB_PACK_WORK_DIR`
 - `OPENCRAB_PACK_OUTPUT_DIR`
+- `OPENCRAB_INGEST_RESEARCH_DEPTH`
+- `OPENCRAB_INGEST_RESEARCH_FIELDS`
 - `OPENCRAB_RESEARCH_SKILL_DIR`
 - `OPENCRAB_RESEARCH_ENGINE_DIR`
 - `OPENCRAB_VISION_SKILL_DIR`
@@ -167,6 +169,8 @@ When `Research` is checked in the Agent tab, the task context also points Codex 
 When `Vision` is checked in the Agent tab, the task context points Codex at the bundled `multilingual-clip-vision` skill and helper engine. Use it for image datasets, product/package images, screenshots, multilingual visual labels, and image-based ontology packs. Vision outputs should be saved under `codex-workspace/opencrab_data/vision`. Heavy model dependencies are optional; install them only when needed with `python -m pip install multilingual-clip torch open_clip_torch pillow numpy transformers`, or set `OPENCRAB_INSTALL_VISION_DEPS=1` during installer builds to bundle them.
 
 When `Zip` is checked in the Agent tab, Codex is instructed to write pack artifacts under `codex-workspace/opencrab_data/packs/<task-id>`. After Codex finishes, OpenCrab Desktop automatically creates a `.zip` file in the selected Pack ZIP folder and adds it to the Ingest tab's queue. From there, open the folder or run `Ingest ZIP` to ingest text-readable pack files into the local OpenCrab API.
+
+Before running a Codex task, the Agent tab also has an `Ingest research` setting. Choose the depth (`Quick`, `Standard`, `Deep`, or `Exhaustive`) and select which ontology threads Codex should collect before building ingest files: subject, resource, evidence, concept, claim, community, outcome, lever, and policy. These settings are injected into the Codex task file and environment so generated packs include a research matrix, source metadata, confidence notes, and the selected data-value fields.
 
 ## Signing And Notarization
 
@@ -272,6 +276,13 @@ apps\desktop\dist\win-unpacked\OpenCrab.exe
 - Adds automatic ZIP packaging for Codex pack staging directories after a task completes.
 - Adds a generated pack Ingest queue in the Ingest tab with open-folder and `Ingest ZIP` actions.
 - Persists generated pack records and ZIP output settings in the desktop user data directory.
+
+### v1.0.11
+
+- Adds an `Ingest research` control before Codex task execution.
+- Lets users choose research depth from quick to exhaustive before creating packs.
+- Lets users select required ontology threads for generated ingest values: subject, resource, evidence, concept, claim, community, outcome, lever, and policy.
+- Injects the selected research scope into Codex task files and process environment so generated ZIP packs include clearer research matrices and evidence metadata.
 
 ## Attribution
 

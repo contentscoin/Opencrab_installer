@@ -39,6 +39,17 @@ export interface QueryResult {
 }
 
 export type SourceType = 'obsidian' | 'notion' | 'gdrive' | 'github'
+export type IngestResearchDepth = 'quick' | 'standard' | 'deep' | 'exhaustive'
+export type IngestResearchField =
+  | 'subject'
+  | 'resource'
+  | 'evidence'
+  | 'concept'
+  | 'claim'
+  | 'community'
+  | 'outcome'
+  | 'lever'
+  | 'policy'
 
 export interface DesktopStatus {
   ok: boolean
@@ -76,6 +87,8 @@ export interface CodexTaskResult {
   model: string
   reasoningEffort: string
   permissionMode: string
+  ingestResearchDepth?: IngestResearchDepth | string
+  ingestResearchFields?: string[]
   progress: string[]
   messages?: Array<{
     id: string
@@ -381,6 +394,8 @@ export async function runCodexTask(input: {
   useVisionSkill?: boolean
   packageOutput?: boolean
   packOutputDir?: string
+  ingestResearchDepth?: IngestResearchDepth
+  ingestResearchFields?: IngestResearchField[]
 }): Promise<CodexTaskResult> {
   const r = await fetch(`${desktopBase()}/desktop/codex/task`, {
     method: 'POST',
