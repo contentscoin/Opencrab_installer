@@ -77,6 +77,8 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
     void refreshDesktopStatus()
     void refreshLocalServices()
     void refreshCodexStatus()
+    const timer = setInterval(() => void refreshLocalServices(), 15000)
+    return () => clearInterval(timer)
   }, [])
 
   function showToast(msg: string, type: 'success' | 'error' = 'success') {

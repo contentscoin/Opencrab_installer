@@ -63,7 +63,7 @@ Manual validation on macOS:
 ```bash
 codesign --verify --deep --strict --verbose=2 "apps/desktop/dist/mac/OpenCrab.app"
 spctl --assess --type execute --verbose=4 "apps/desktop/dist/mac/OpenCrab.app"
-xcrun stapler validate "apps/desktop/dist/OpenCrab-1.0.3.dmg"
+xcrun stapler validate "apps/desktop/dist/OpenCrab-1.0.4.dmg"
 ```
 
 Manual notarization fallback:
@@ -74,12 +74,12 @@ xcrun notarytool store-credentials opencrab-notary \
   --team-id "$APPLE_TEAM_ID" \
   --password "$APPLE_APP_SPECIFIC_PASSWORD"
 
-xcrun notarytool submit "apps/desktop/dist/OpenCrab-1.0.3.dmg" \
+xcrun notarytool submit "apps/desktop/dist/OpenCrab-1.0.4.dmg" \
   --keychain-profile opencrab-notary \
   --wait
 
-xcrun stapler staple "apps/desktop/dist/OpenCrab-1.0.3.dmg"
-xcrun stapler validate "apps/desktop/dist/OpenCrab-1.0.3.dmg"
+xcrun stapler staple "apps/desktop/dist/OpenCrab-1.0.4.dmg"
+xcrun stapler validate "apps/desktop/dist/OpenCrab-1.0.4.dmg"
 ```
 
 Notes:
@@ -138,7 +138,7 @@ npm --prefix apps\desktop run dist:win
 Verify:
 
 ```powershell
-signtool verify /pa /v "apps\desktop\dist\OpenCrab Setup 1.0.3.exe"
+signtool verify /pa /v "apps\desktop\dist\OpenCrab Setup 1.0.4.exe"
 ```
 
 ### Option B: Traditional EV or Cloud Code Signing Certificate
@@ -154,9 +154,9 @@ Manual signing example:
 ```powershell
 signtool sign /a /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 `
   /d "OpenCrab Desktop" `
-  "apps\desktop\dist\OpenCrab Setup 1.0.3.exe"
+  "apps\desktop\dist\OpenCrab Setup 1.0.4.exe"
 
-signtool verify /pa /v "apps\desktop\dist\OpenCrab Setup 1.0.3.exe"
+signtool verify /pa /v "apps\desktop\dist\OpenCrab Setup 1.0.4.exe"
 ```
 
 Notes:

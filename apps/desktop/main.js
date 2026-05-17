@@ -130,7 +130,7 @@ const LOADING_HTML = `
   <body>
     <main>
       <h1>OpenCrab is starting</h1>
-      <p>Starting Neo4j, the local API, and the desktop workspace. First launch can take a little longer while services warm up.</p>
+      <p>Opening the desktop workspace. Local graph services continue warming up in the background after the dashboard appears.</p>
       <div class="bar" aria-hidden="true"></div>
     </main>
   </body>
@@ -932,6 +932,19 @@ async function runInitialIngest(rootDir, env) {
   });
 }
 
+async function bootstrapLocalRuntime(rootDir, serviceEnv) {
+  try {
+    log('Local Services', 'background bootstrap started');
+    await ensureLocalServices();
+    await startNeo4jMcpServer(rootDir, serviceEnv);
+    await checkMcpIntegration(serviceEnv);
+    await runInitialIngest(rootDir, serviceEnv);
+    log('Local Services', 'background bootstrap completed');
+  } catch (error) {
+    log('Local Services ERR', error && error.message ? error.message : String(error));
+  }
+}
+
 async function startServices() {
   const rootDir = getRootDir();
   loadEnvFile(userEnvPath(app));
@@ -951,11 +964,8 @@ async function startServices() {
 
   const serviceEnv = activeServiceEnv;
 
-  await ensureLocalServices();
-  await startNeo4jMcpServer(rootDir, serviceEnv);
-  await checkMcpIntegration(serviceEnv);
-  await runInitialIngest(rootDir, serviceEnv);
   await startNext(rootDir, serviceEnv);
+  void bootstrapLocalRuntime(rootDir, serviceEnv);
   startServiceMonitor();
 }
 
@@ -1103,7 +1113,7 @@ function showStartupError(error) {
     'OpenCrab is starting',
     'OpenCrab could not start',
   ).replace(
-    'Starting Neo4j, the local API, and the desktop workspace. First launch can take a little longer while services warm up.',
+    'Opening the desktop workspace. Local graph services continue warming up in the background after the dashboard appears.',
     `Startup failed. ${message.replace(/[&<>"']/g, (character) => ({
       '&': '&amp;',
       '<': '&lt;',

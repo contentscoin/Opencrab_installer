@@ -60,14 +60,16 @@ Expected runtime:
   - `5433` for PostgreSQL
   - `8002` for ChromaDB
 
-If Docker Desktop is missing on Windows, the installer bootstrap attempts to install/start it through `winget` where available. Some Windows machines still require Docker Desktop first-run approval or a restart. On macOS, install and start Docker Desktop manually before launching OpenCrab.
+If Docker Desktop is missing on Windows, the first app launch attempts to install/start it through `winget` where available. Some Windows machines still require Docker Desktop first-run approval or a restart. On macOS, install and start Docker Desktop manually before launching OpenCrab.
+
+By default, Windows installers skip the heavy Docker/Neo4j bootstrap during installation and run it from the app on first launch. To force install-time bootstrap on a managed machine, launch the installer with `OPENCRAB_RUN_INSTALL_BOOTSTRAP=1`.
 
 ## How To Use
 
 1. Download the Windows `.exe` or macOS `.dmg` from Releases.
-2. Run the installer and wait until it fully completes. The bundled Python environment and web dependencies make first install noticeably large.
+2. Run the installer and wait until it completes. The installer copies the desktop app and defers Docker/Neo4j startup to first app launch so the install step stays fast.
 3. Launch OpenCrab from the Start Menu or desktop shortcut.
-4. Wait for the startup screen to finish. The app starts Docker services, FastAPI, and the web UI.
+4. Wait for the dashboard to open. Local Docker services, FastAPI, and initial graph ingest continue warming up in the background.
 5. Use the dashboard for graph viewing, ingest, querying, and local service status.
 
 Neo4j local access:
@@ -196,6 +198,12 @@ apps\desktop\dist\win-unpacked\OpenCrab.exe
 - Adds a Codex CLI task runner in the desktop control server and Agent tab.
 - Adds Codexian-style Codex CLI discovery, Windows `codex.cmd` handling, task context files, and final-message capture.
 - Adds signing and notarization guidance for macOS and Windows releases.
+
+### v1.0.4
+
+- Speeds up Windows installation by deferring Docker/Neo4j/data-service bootstrap from NSIS install time to first app launch.
+- Opens the dashboard as soon as the web UI is ready while local graph services warm up in the background.
+- Keeps an opt-in `OPENCRAB_RUN_INSTALL_BOOTSTRAP=1` path for managed installs that still want bootstrap during installation.
 
 ## Attribution
 
