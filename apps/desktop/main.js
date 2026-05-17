@@ -243,7 +243,7 @@ function buildServiceEnv(controlPort = getControlPort()) {
     OPENCRAB_API_KEY: localApiKey,
     OPENCRAB_MCP_URL: process.env.OPENCRAB_MCP_URL || '',
     OPENCRAB_MCP_API_KEY: process.env.OPENCRAB_MCP_API_KEY || '',
-    OPENCRAB_TIER: process.env.OPENCRAB_TIER || 'free',
+    OPENCRAB_TIER: process.env.OPENCRAB_TIER || 'pro',
     OPENCRAB_PYTHON: process.env.OPENCRAB_PYTHON || getPythonPath(getRootDir()),
     OPENCRAB_PACK_OUTPUT_DIR: process.env.OPENCRAB_PACK_OUTPUT_DIR || '',
     OPENCRAB_INGEST_RESEARCH_DEPTH: process.env.OPENCRAB_INGEST_RESEARCH_DEPTH || 'standard',

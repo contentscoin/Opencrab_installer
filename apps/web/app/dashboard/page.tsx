@@ -5,7 +5,7 @@ import dynamic from 'next/dynamic'
 import FileExplorer from '../../components/FileExplorer'
 import RightPanel from '../../components/RightPanel'
 import type { OcNode, OcEdge } from '../../lib/api'
-import { getNodes, getEdges, getStatus } from '../../lib/api'
+import { getDesktopStatus, getNodes, getEdges, getStatus } from '../../lib/api'
 
 const GraphView = dynamic(() => import('../../components/GraphView'), { ssr: false })
 
@@ -38,8 +38,25 @@ export default function DashboardPage() {
   const refreshTimer = useRef<ReturnType<typeof setInterval> | null>(null)
 
   useEffect(() => {
-    const saved = localStorage.getItem('oc_api_key') || process.env.NEXT_PUBLIC_OPENCRAB_API_KEY || ''
-    setApiKey(saved)
+    let cancelled = false
+    const loadApiKey = async () => {
+      const saved = localStorage.getItem('oc_api_key') || process.env.NEXT_PUBLIC_OPENCRAB_API_KEY || ''
+      try {
+        const status = await getDesktopStatus()
+        const nextKey = status.localApiKey || saved
+        if (!cancelled && nextKey) {
+          setApiKey(nextKey)
+          localStorage.setItem('oc_api_key', nextKey)
+        }
+      } catch {
+        if (!cancelled) setApiKey(saved)
+      }
+    }
+
+    void loadApiKey()
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   function handleApiKeyChange(key: string) {

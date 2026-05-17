@@ -1975,11 +1975,15 @@ function createControlHandler({
       const url = new URL(request.url || '/', `http://127.0.0.1:${getPort()}`);
       if (request.method === 'GET' && url.pathname === '/desktop/status') {
         const configuredUrl = currentMcpUrl();
+        const serviceEnv = getServiceEnv ? getServiceEnv() : {};
         sendJson(response, 200, {
           ok: true,
           mcpUrlConfigured: Boolean(configuredUrl),
           mcpUrl: configuredUrl ? redactMcpUrl(configuredUrl) : '',
           oauthPending: Boolean(pendingOAuth),
+          apiUrl: serviceEnv.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8080',
+          localMcpUrl: 'http://127.0.0.1:8080/mcp',
+          localApiKey: serviceEnv.OPENCRAB_API_KEY || process.env.OPENCRAB_API_KEY || 'local-opencrab-key',
         });
         return;
       }

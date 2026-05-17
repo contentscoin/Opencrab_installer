@@ -56,6 +56,9 @@ export interface DesktopStatus {
   mcpUrlConfigured: boolean
   mcpUrl: string
   oauthPending?: boolean
+  apiUrl?: string
+  localMcpUrl?: string
+  localApiKey?: string
 }
 
 export interface AgentAssetResult {
@@ -199,7 +202,7 @@ export async function query(apiKey: string, question: string, topK = 5) {
 export async function ingestSource(
   apiKey: string,
   sourceType: SourceType,
-  accessToken: string,
+  text: string,
   opts: {
     sourceId?: string
     sourceUrl?: string
@@ -211,12 +214,14 @@ export async function ingestSource(
     method: 'POST',
     headers: headers(apiKey),
     body: JSON.stringify({
-      source_type: sourceType,
-      access_token: accessToken,
+      text,
       source_id: opts.sourceId,
-      source_url: opts.sourceUrl,
-      query: opts.query,
-      max_items: opts.maxItems ?? 25,
+      metadata: {
+        source_type: sourceType,
+        source_url: opts.sourceUrl,
+        query: opts.query,
+        max_items: opts.maxItems ?? 25,
+      },
     }),
   })
   if (!r.ok) {

@@ -225,7 +225,7 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
       const status = await startLocalServices()
       setServiceStatus(status)
       setIngestPhase('importing')
-      await ingestSource(apiKey, ingestSourceType, ingestToken, { query: ingestQuery || undefined })
+      await ingestSource(apiKey, ingestSourceType, ingestToken, { sourceId: ingestQuery || undefined })
       showToast('Ingest complete')
       setIngestToken('')
       setIngestQuery('')
@@ -408,10 +408,6 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
   }
 
   async function handleIngestGeneratedPack(path: string) {
-    if (!apiKey.trim()) {
-      showToast('API key is required before ingesting a generated pack', 'error')
-      return
-    }
     setPackIngestingPath(path)
     try {
       await startLocalServices()
@@ -622,24 +618,23 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
             </div>
             <div style={{ marginBottom: 8 }}>
               <label style={{ fontSize: 11, color: '#7c6f64', display: 'block', marginBottom: 4 }}>
-                Access token {ingestSourceType === 'obsidian' && '(Obsidian Sync API key)'}
+                Text / evidence
               </label>
-              <input
+              <textarea
                 className="input-dark mono"
                 value={ingestToken}
                 onChange={(event) => setIngestToken(event.target.value)}
-                placeholder="Enter API token"
-                type="password"
-                style={{ fontSize: 11 }}
+                placeholder="Paste text, notes, evidence, or pack content to ingest"
+                style={{ fontSize: 11, height: 90 }}
               />
             </div>
             <div style={{ marginBottom: 8 }}>
-              <label style={{ fontSize: 11, color: '#7c6f64', display: 'block', marginBottom: 4 }}>Search query (optional)</label>
+              <label style={{ fontSize: 11, color: '#7c6f64', display: 'block', marginBottom: 4 }}>Source id (optional)</label>
               <input
                 className="input-dark"
                 value={ingestQuery}
                 onChange={(event) => setIngestQuery(event.target.value)}
-                placeholder="Filter imported data"
+                placeholder="Stable id for this source"
                 style={{ fontSize: 11 }}
               />
             </div>

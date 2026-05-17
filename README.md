@@ -164,6 +164,10 @@ When `Neo4j` is checked in the Agent tab, OpenCrab Desktop starts the local Neo4
 
 The task file redacts OpenCrab MCP tokens, but the child Codex process receives the real endpoint through environment variables so it can use the configured MCP bridge.
 
+For local desktop runs, OpenCrab Desktop supplies the local API key to the dashboard and defaults `OPENCRAB_TIER` to `pro` unless the user overrides it. This keeps local text ingest from being blocked by the cloud free-tier source limit.
+
+The Ingest tab imports plain text/evidence into `/api/ingest` with the selected source type stored as metadata. Generated Codex ZIP packs still use the pack queue and `Ingest ZIP` action.
+
 When `Research` is checked in the Agent tab, the task context also points Codex at the bundled `insane-search` skill and Python research engine. Use it for ontology-pack research, source discovery, blocked-page fallback fetching, public evidence collection, and entity/claim/source extraction before writing ingest files. Research outputs should be saved under `codex-workspace/opencrab_data/research` in packaged installs.
 
 When `Vision` is checked in the Agent tab, the task context points Codex at the bundled `multilingual-clip-vision` skill and helper engine. Use it for image datasets, product/package images, screenshots, multilingual visual labels, and image-based ontology packs. Vision outputs should be saved under `codex-workspace/opencrab_data/vision`. Heavy model dependencies are optional; install them only when needed with `python -m pip install multilingual-clip torch open_clip_torch pillow numpy transformers`, or set `OPENCRAB_INSTALL_VISION_DEPS=1` during installer builds to bundle them.
@@ -283,6 +287,12 @@ apps\desktop\dist\win-unpacked\OpenCrab.exe
 - Lets users choose research depth from quick to exhaustive before creating packs.
 - Lets users select required ontology threads for generated ingest values: subject, resource, evidence, concept, claim, community, outcome, lever, and policy.
 - Injects the selected research scope into Codex task files and process environment so generated ZIP packs include clearer research matrices and evidence metadata.
+
+### v1.0.12
+
+- Fixes dashboard API-key auto-detection in packaged desktop builds by loading the local key from the desktop control server.
+- Fixes the Ingest tab request body to match the FastAPI `/api/ingest` schema (`text`, `source_id`, and `metadata`).
+- Changes the desktop default local tier to `pro` so local ingest is not blocked by the cloud free-tier one-source limit.
 
 ## Attribution
 
