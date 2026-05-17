@@ -38,13 +38,46 @@ def _node_available() -> bool:
     return shutil.which("node") is not None
 
 
+def _node_env() -> dict[str, str]:
+    env = os.environ.copy()
+    node_paths = [
+        os.path.join(TEMPLATES_DIR, "node_modules"),
+        env.get("NODE_PATH", ""),
+    ]
+    npm = shutil.which("npm")
+    if npm:
+        try:
+            root = subprocess.run(
+                [npm, "root", "-g"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if root.returncode == 0:
+                node_paths.append(root.stdout.strip())
+        except Exception:
+            pass
+    env["NODE_PATH"] = os.pathsep.join(path for path in node_paths if path)
+    return env
+
+
 def _chrome_channel_available() -> bool:
-    """Heuristic: try `node -e` to import playwright. Fallback to True, let script fail loudly."""
+    """Return True only when Node can resolve the local Playwright runtime."""
     if not _node_available():
         return False
-    if shutil.which("npx") is None:
+    try:
+        result = subprocess.run(
+            ["node", "-e", "require.resolve('playwright')"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env=_node_env(),
+        )
+        if result.returncode == 0:
+            return True
+    except Exception:
         return False
-    return True
+    return False
 
 
 def _pick_executor(capabilities: list[str], device_class: str) -> str:
@@ -77,6 +110,7 @@ def _run_node_template(template: str, args: dict, timeout: int = 90) -> tuple[in
             capture_output=True,
             text=True,
             timeout=timeout,
+            env=_node_env(),
         )
         return proc.returncode, proc.stdout, proc.stderr
     except subprocess.TimeoutExpired:
@@ -148,7 +182,10 @@ def run_playwright_fallback(
         return att, ""
 
     if not _chrome_channel_available():
-        att.error = "node/npx not available for local Playwright template"
+        att.error = (
+            "Playwright runtime is not installed for local browser fallback. "
+            "Use public APIs/cache sources, install templates dependencies, or rerun URL fetch with --no-playwright."
+        )
         att.verdict = Verdict.UNKNOWN.value
         att.elapsed_s = round(time.time() - t0, 3)
         return att, ""

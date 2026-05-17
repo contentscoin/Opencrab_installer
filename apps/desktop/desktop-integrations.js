@@ -571,6 +571,14 @@ function parseEnvironmentVariables(input) {
   return env;
 }
 
+function extractHttpUrls(text) {
+  return String(text || '').match(/https?:\/\/[^\s"'<>)]*/gi) || [];
+}
+
+function quoteForTask(value) {
+  return JSON.stringify(String(value || ''));
+}
+
 function buildCodexProcessEnv(extraInput = '', overrides = {}) {
   const parsed = parseEnvironmentVariables(extraInput);
   const basePath = parsed.PATH || overrides.PATH || process.env.PATH || '';
@@ -1178,7 +1186,12 @@ function buildCodexTaskContent({
   const localMcp = 'http://127.0.0.1:8080/mcp';
   const configuredMcp = mcpUrl || serviceEnv.OPENCRAB_MCP_URL || localMcp;
   const ingestDir = path.join(cwd, 'opencrab_data', 'ingest');
+  const researchDir = path.join(cwd, 'opencrab_data', 'research');
   const visionDir = path.join(cwd, 'opencrab_data', 'vision');
+  const taskUrls = extractHttpUrls(task);
+  const keywordResearch = taskUrls.length === 0;
+  const keywordResearchCommand = `${research?.python || 'python'} -m engine.keyword_research ${quoteForTask(task)} --output ${quoteForTask(path.join(researchDir, 'keyword-research.json'))} --json`;
+  const urlResearchCommand = `${research?.python || 'python'} -m engine "<REAL_URL>" --json --trace`;
   const packBlock = pack?.enabled ? `
 ## Pack Output
 
@@ -1201,12 +1214,17 @@ function buildCodexTaskContent({
 - Research skill path: ${research.skillDir}
 - Research engine path: ${research.engineDir}
 - Python command: ${research.python}
+- Research mode for this request: ${keywordResearch ? 'keyword-first, because the user did not provide a URL' : `URL-aware, because ${taskUrls.length} URL(s) were provided`}
 - Research runtime dependencies are bundled into packaged releases. If running from a development checkout and the engine reports missing packages, install them with:
   - ${research.python} -m pip install curl_cffi beautifulsoup4 pyyaml feedparser yt-dlp
-- For ontology pack research, first collect source evidence with the research skill before drafting entities or relationships.
-- For direct URL fetches, run from the research skill directory:
-  - ${research.python} -m engine "<URL>" --json --trace
-- Store useful research outputs under ${path.join(cwd, 'opencrab_data', 'research')}.
+- For keyword-only ontology pack requests, first run the keyword research helper from the research skill directory:
+  - ${keywordResearchCommand}
+- For direct URL fetches, run the URL engine only with a real URL from the user request or from keyword research results:
+  - ${urlResearchCommand}
+- Never run the URL engine with placeholders such as "<URL>", "<REAL_URL>", or an empty string.
+- Use the URL engine for blocked concrete pages. Do not use it as a general search engine.
+- If Playwright/browser fallback is unavailable, keep the public-source results, note the blocked source, and continue producing the pack instead of repeatedly retrying the blocked page.
+- Store useful research outputs under ${researchDir}.
 - Convert research into ontology-pack artifacts with explicit source URLs, evidence snippets, claims, entities, relationships, and confidence notes.
 - Do not bypass login-only, private, or paywalled content. Use public pages, public APIs, RSS, metadata, Jina Reader, archive/cache routes, or browser/API discovery only when appropriate.
 ` : `
@@ -1485,6 +1503,9 @@ async function runCodexTaskInBackground({ app, rootDir, log, ensureLocalServices
     env.OPENCRAB_PACK_OUTPUT_DIR = pack.outputDir;
     env.OPENCRAB_INGEST_RESEARCH_DEPTH = ingestResearch.depth;
     env.OPENCRAB_INGEST_RESEARCH_FIELDS = ingestResearch.fieldIds.join(',');
+    const promptUrls = extractHttpUrls(requestText);
+    env.OPENCRAB_RESEARCH_MODE = promptUrls.length ? 'url' : 'keyword';
+    env.OPENCRAB_RESEARCH_QUERY = requestText;
     const research = getResearchContext(rootDir, env, body.useResearchSkill !== false);
     const vision = getVisionContext(rootDir, env, body.useVisionSkill !== false);
     appendCodexProgress(
@@ -1505,6 +1526,13 @@ async function runCodexTaskInBackground({ app, rootDir, log, ensureLocalServices
       research.available
         ? `Research skill enabled: ${RESEARCH_SKILL_NAME}`
         : `Research skill unavailable: ${RESEARCH_SKILL_NAME}`,
+    );
+    appendCodexProgress(
+      task,
+      'system',
+      promptUrls.length
+        ? `Research routing: URL-aware (${promptUrls.length} URL detected).`
+        : 'Research routing: keyword-first (no URL detected; blocked-site bypass disabled until a real source URL is found).',
     );
     appendCodexProgress(
       task,

@@ -324,6 +324,13 @@ apps\desktop\dist\win-unpacked\OpenCrab.exe
 - Adds `Connect Copied MCP URL`, which reads an OpenCrab MCP URL from the clipboard, validates it with `tools/list`, and stores it for Codex/agent assets.
 - Adds the same copied-MCP connection path to the Agent tab.
 
+### v1.0.16
+
+- Fixes Codex pack tasks for keyword-only requests such as `골프공` by routing them to keyword-first public research instead of the blocked-URL bypass engine.
+- Adds a bundled `engine.keyword_research` helper for Wikipedia, Wikidata, and OpenAlex source discovery.
+- Updates Codex task instructions so `insane-search` is only used with concrete URLs and never with placeholder values like `<URL>`.
+- Improves Playwright fallback errors so missing browser dependencies do not dump Node module stack traces or trap the task in repeated retries.
+
 ## Attribution
 
 OpenCrab itself comes from [AlexAI-MCP/OpenCrab](https://github.com/AlexAI-MCP/OpenCrab). This fork focuses on installer, desktop runtime orchestration, OpenCrab MCP bridge assets, and public release packaging.
