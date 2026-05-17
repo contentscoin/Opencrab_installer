@@ -196,26 +196,100 @@ function currentMcpUrl() {
   return (process.env.OPENCRAB_MCP_URL || '').trim();
 }
 
-async function testMcpUrl(url, apiKey = '') {
+function currentMcpApiKey() {
+  return (process.env.OPENCRAB_MCP_API_KEY || '').trim();
+}
+
+function getStoredMcpToolNames() {
+  try {
+    const parsed = JSON.parse(process.env.OPENCRAB_MCP_TOOL_NAMES || '[]');
+    return Array.isArray(parsed) ? parsed.map((item) => String(item)).filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
+function getStoredMcpStatus() {
+  const toolNames = getStoredMcpToolNames();
+  const count = Number(process.env.OPENCRAB_MCP_TOOL_COUNT || toolNames.length || 0);
+  return {
+    toolCount: Number.isFinite(count) ? count : toolNames.length,
+    toolNames,
+    ingestAvailable: hasMcpIngestTool(toolNames),
+  };
+}
+
+function getMcpToolNames(tools = []) {
+  return Array.isArray(tools) ? tools.map((tool) => String(tool?.name || '')).filter(Boolean) : [];
+}
+
+function hasMcpIngestTool(toolNames = []) {
+  return toolNames.some((toolName) => {
+    const name = String(toolName || '').toLowerCase();
+    return [
+      'opencrab_ingest_text',
+      'ingest_text',
+      'opencrab_ingest',
+      'ontology_ingest',
+      'text_ingest',
+    ].includes(name) || (name.includes('ingest') && (name.includes('text') || name.includes('source') || name.includes('document') || name.includes('opencrab')));
+  });
+}
+
+function parseMcpResponseText(text) {
+  const trimmed = String(text || '').trim();
+  if (!trimmed) return {};
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    const dataLines = trimmed
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith('data:'))
+      .map((line) => line.slice(5).trim())
+      .filter((line) => line && line !== '[DONE]');
+    for (const line of dataLines.reverse()) {
+      try {
+        return JSON.parse(line);
+      } catch {
+        // Try the next data line.
+      }
+    }
+  }
+  throw new Error(`MCP response was not JSON: ${trimmed.slice(0, 240)}`);
+}
+
+function mcpHeaders(apiKey = '') {
   const headers = {
     'Content-Type': 'application/json',
     Accept: 'application/json, text/event-stream',
   };
-  if (apiKey) {
-    headers.Authorization = `Bearer ${apiKey}`;
+  const token = String(apiKey || currentMcpApiKey()).trim();
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
   }
+  return headers;
+}
 
+async function postMcpJson(url, payload, apiKey = '') {
   const response = await fetch(url, {
     method: 'POST',
-    headers,
-    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+    headers: mcpHeaders(apiKey),
+    body: JSON.stringify(payload),
   });
   const text = await response.text();
   if (!response.ok) {
-    throw new Error(`MCP tools/list failed with ${response.status}: ${text.slice(0, 240)}`);
+    throw new Error(`MCP request failed with ${response.status}: ${text.slice(0, 240)}`);
   }
+  const data = parseMcpResponseText(text);
+  if (data?.error) {
+    const message = data.error.message || JSON.stringify(data.error);
+    throw new Error(`MCP error: ${message}`);
+  }
+  return data;
+}
 
-  const data = text ? JSON.parse(text) : {};
+async function testMcpUrl(url, apiKey = '') {
+  const data = await postMcpJson(url, { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }, apiKey);
   const tools = data?.result?.tools;
   if (!Array.isArray(tools) || tools.length === 0) {
     throw new Error('MCP endpoint did not return tools.');
@@ -224,10 +298,136 @@ async function testMcpUrl(url, apiKey = '') {
   return tools;
 }
 
+function findMcpIngestTool(tools = []) {
+  if (!Array.isArray(tools)) return null;
+  const preferred = ['opencrab_ingest_text', 'ingest_text', 'opencrab_ingest', 'ontology_ingest', 'text_ingest'];
+  for (const name of preferred) {
+    const match = tools.find((tool) => tool?.name === name);
+    if (match) return match;
+  }
+  return tools.find((tool) => {
+    const name = String(tool?.name || '').toLowerCase();
+    return name.includes('ingest') && (name.includes('text') || name.includes('source') || name.includes('document') || name.includes('opencrab'));
+  }) || null;
+}
+
+function compactObject(value) {
+  return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined && item !== null && item !== ''));
+}
+
+function buildMcpIngestArgs(tool, payload = {}) {
+  const text = String(payload.text || payload.content || '').trim();
+  if (!text) {
+    throw new Error('Text is required for OpenCrab cloud ingest.');
+  }
+
+  const sourceType = String(payload.sourceType || payload.source_type || 'desktop').trim();
+  const sourceId = String(payload.sourceId || payload.source_id || `desktop:${Date.now()}`).trim();
+  const title = String(payload.title || payload.name || sourceId || 'OpenCrab Desktop ingest').trim();
+  const metadata = compactObject({
+    ...(payload.metadata && typeof payload.metadata === 'object' ? payload.metadata : {}),
+    source_type: sourceType,
+    source_id: sourceId,
+    source_url: payload.sourceUrl || payload.source_url,
+    origin: 'opencrab_desktop',
+    ingested_via: 'desktop_mcp',
+  });
+
+  const schema = tool?.inputSchema || tool?.schema || {};
+  const properties = schema?.properties && typeof schema.properties === 'object' ? schema.properties : {};
+  const propertyNames = Object.keys(properties);
+  if (propertyNames.length === 0) {
+    return {
+      title,
+      content: text,
+      metadata,
+    };
+  }
+
+  const args = {};
+  const setFirst = (names, value) => {
+    for (const name of names) {
+      if (Object.prototype.hasOwnProperty.call(properties, name)) {
+        args[name] = value;
+        return true;
+      }
+    }
+    return false;
+  };
+
+  setFirst(['title', 'name'], title);
+  const textAssigned = setFirst(['content', 'text', 'body', 'document', 'markdown'], text);
+  setFirst(['source_id', 'sourceId', 'id'], sourceId);
+  setFirst(['source_type', 'sourceType'], sourceType);
+  setFirst(['source_url', 'sourceUrl', 'url'], payload.sourceUrl || payload.source_url);
+  setFirst(['metadata', 'meta'], metadata);
+  setFirst(['payload', 'input'], { title, content: text, source_id: sourceId, source_type: sourceType, metadata });
+
+  if (!textAssigned && schema.additionalProperties !== false) {
+    args.content = text;
+  }
+
+  const required = Array.isArray(schema.required) ? schema.required : [];
+  for (const name of required) {
+    if (args[name] !== undefined) continue;
+    if (/content|text|body|document|markdown/i.test(name)) args[name] = text;
+    else if (/title|name/i.test(name)) args[name] = title;
+    else if (/source.*id|source_id/i.test(name)) args[name] = sourceId;
+    else if (/source.*type|source_type/i.test(name)) args[name] = sourceType;
+    else if (/meta/i.test(name)) args[name] = metadata;
+  }
+
+  return compactObject(args);
+}
+
+async function callMcpTool(name, args, apiKey = '') {
+  const url = currentMcpUrl();
+  if (!url) {
+    throw new Error('OpenCrab MCP URL is not configured.');
+  }
+  const data = await postMcpJson(url, {
+    jsonrpc: '2.0',
+    id: Date.now(),
+    method: 'tools/call',
+    params: {
+      name,
+      arguments: args,
+    },
+  }, apiKey);
+  return data?.result ?? data;
+}
+
+async function ingestCloudText(payload = {}, apiKey = '') {
+  const url = currentMcpUrl();
+  if (!url) {
+    throw new Error('OpenCrab MCP URL is not configured.');
+  }
+  const tools = await testMcpUrl(url, apiKey);
+  const tool = findMcpIngestTool(tools);
+  if (!tool?.name) {
+    throw new Error('Configured MCP endpoint does not expose opencrab_ingest_text.');
+  }
+  const args = buildMcpIngestArgs(tool, payload);
+  const result = await callMcpTool(tool.name, args, apiKey);
+  const toolNames = getMcpToolNames(tools);
+  return {
+    ok: true,
+    mcpUrl: redactMcpUrl(url),
+    tools: toolNames.length,
+    tool: tool.name,
+    result,
+  };
+}
+
 async function saveMcpUrl(app, rootDir, value, apiKey = '') {
   const url = validateMcpUrlFormat(value);
   const tools = await testMcpUrl(url, apiKey);
-  const updates = { OPENCRAB_MCP_URL: url };
+  const toolNames = getMcpToolNames(tools);
+  const updates = {
+    OPENCRAB_MCP_URL: url,
+    OPENCRAB_MCP_TOOL_COUNT: String(toolNames.length),
+    OPENCRAB_MCP_TOOL_NAMES: JSON.stringify(toolNames),
+  };
   if (apiKey) {
     updates.OPENCRAB_MCP_API_KEY = apiKey;
   }
@@ -239,6 +439,8 @@ async function saveMcpUrl(app, rootDir, value, apiKey = '') {
   }
 
   process.env.OPENCRAB_MCP_URL = url;
+  process.env.OPENCRAB_MCP_TOOL_COUNT = String(toolNames.length);
+  process.env.OPENCRAB_MCP_TOOL_NAMES = JSON.stringify(toolNames);
   if (apiKey) {
     process.env.OPENCRAB_MCP_API_KEY = apiKey;
   }
@@ -895,30 +1097,48 @@ function postLocalIngest(apiKey, payload) {
   });
 }
 
-async function ingestGeneratedPack(app, match, apiKey, serviceEnv = {}) {
+async function ingestGeneratedPack(app, match, apiKey, serviceEnv = {}, target = 'local') {
   const pack = findGeneratedPack(app, match);
   if (!pack) {
     throw new Error('Generated pack not found.');
   }
+  const ingestTarget = ['local', 'cloud', 'both'].includes(target) ? target : 'local';
+  const wantsLocal = ingestTarget === 'local' || ingestTarget === 'both';
+  const wantsCloud = ingestTarget === 'cloud' || ingestTarget === 'both';
   const token = String(apiKey || serviceEnv.OPENCRAB_API_KEY || '').trim();
-  if (!token) {
+  if (wantsLocal && !token) {
     throw new Error('API key is required to ingest a generated pack.');
   }
   const { text, files } = readPackTextForIngest(pack);
-  const result = await postLocalIngest(token, {
-    text,
-    source_id: `opencrab-pack:${pack.taskId || path.basename(pack.zipPath)}`,
-    metadata: {
-      source_type: 'opencrab_generated_pack',
-      zip_path: pack.zipPath,
-      task_id: pack.taskId,
-      file_count: files.length,
-      files: files.map((file) => file.relativePath),
-    },
-  });
+  const sourceId = `opencrab-pack:${pack.taskId || path.basename(pack.zipPath)}`;
+  const metadata = {
+    source_type: 'opencrab_generated_pack',
+    zip_path: pack.zipPath,
+    task_id: pack.taskId,
+    file_count: files.length,
+    files: files.map((file) => file.relativePath),
+  };
+  const result = {};
+  if (wantsLocal) {
+    result.local = await postLocalIngest(token, {
+      text,
+      source_id: sourceId,
+      metadata,
+    });
+  }
+  if (wantsCloud) {
+    result.cloud = await ingestCloudText({
+      text,
+      sourceType: 'opencrab_generated_pack',
+      sourceId,
+      title: pack.name || sourceId,
+      metadata,
+    });
+  }
   const updated = updateGeneratedPack(app, match, {
     status: 'ingested',
     ingestedAt: new Date().toISOString(),
+    ingestTarget,
     ingestResult: result,
   });
   return { ok: true, pack: updated, result };
@@ -1997,7 +2217,7 @@ function readJsonBody(request) {
     let body = '';
     request.on('data', (chunk) => {
       body += chunk.toString();
-      if (body.length > 1024 * 1024) {
+      if (body.length > 5 * 1024 * 1024) {
         reject(new Error('Request body too large.'));
         request.destroy();
       }
@@ -2044,10 +2264,15 @@ function createControlHandler({
       if (request.method === 'GET' && url.pathname === '/desktop/status') {
         const configuredUrl = currentMcpUrl();
         const serviceEnv = getServiceEnv ? getServiceEnv() : {};
+        const mcpStatus = getStoredMcpStatus();
         sendJson(response, 200, {
           ok: true,
           mcpUrlConfigured: Boolean(configuredUrl),
           mcpUrl: configuredUrl ? redactMcpUrl(configuredUrl) : '',
+          mcpConnected: Boolean(configuredUrl && mcpStatus.toolCount > 0),
+          mcpToolsCount: mcpStatus.toolCount,
+          mcpToolNames: mcpStatus.toolNames,
+          mcpIngestAvailable: mcpStatus.ingestAvailable,
           oauthPending: Boolean(pendingOAuth),
           apiUrl: serviceEnv.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8080',
           localMcpUrl: 'http://127.0.0.1:8080/mcp',
@@ -2106,7 +2331,8 @@ function createControlHandler({
 
       if (request.method === 'GET' && url.pathname === '/desktop/oauth/callback') {
         const result = await handleOAuthCallback(app, rootDir, url.toString());
-        sendJson(response, 200, { ok: true, mcpUrl: redactMcpUrl(result.url), tools: result.tools.length });
+        const toolNames = getMcpToolNames(result.tools);
+        sendJson(response, 200, { ok: true, mcpUrl: redactMcpUrl(result.url), tools: toolNames.length, toolNames, mcpIngestAvailable: hasMcpIngestTool(toolNames) });
         return;
       }
 
@@ -2114,13 +2340,28 @@ function createControlHandler({
 
       if (request.method === 'POST' && url.pathname === '/desktop/mcp-url') {
         const result = await saveMcpUrl(app, rootDir, String(body.url || ''), String(body.apiKey || ''));
-        sendJson(response, 200, { ok: true, mcpUrl: redactMcpUrl(result.url), tools: result.tools.length });
+        const toolNames = getMcpToolNames(result.tools);
+        sendJson(response, 200, { ok: true, mcpUrl: redactMcpUrl(result.url), tools: toolNames.length, toolNames, mcpIngestAvailable: hasMcpIngestTool(toolNames) });
         return;
       }
 
       if (request.method === 'POST' && url.pathname === '/desktop/mcp-url/clipboard') {
         const result = await saveMcpUrlFromClipboard(app, rootDir, clipboard, String(body.apiKey || ''));
-        sendJson(response, 200, { ok: true, mcpUrl: redactMcpUrl(result.url), tools: result.tools.length });
+        const toolNames = getMcpToolNames(result.tools);
+        sendJson(response, 200, { ok: true, mcpUrl: redactMcpUrl(result.url), tools: toolNames.length, toolNames, mcpIngestAvailable: hasMcpIngestTool(toolNames) });
+        return;
+      }
+
+      if (request.method === 'POST' && url.pathname === '/desktop/cloud/ingest') {
+        const result = await ingestCloudText({
+          text: String(body.text || body.content || ''),
+          sourceType: String(body.sourceType || body.source_type || 'desktop'),
+          sourceId: String(body.sourceId || body.source_id || ''),
+          sourceUrl: String(body.sourceUrl || body.source_url || ''),
+          title: String(body.title || ''),
+          metadata: body.metadata && typeof body.metadata === 'object' ? body.metadata : {},
+        }, String(body.apiKey || ''));
+        sendJson(response, 200, result);
         return;
       }
 
@@ -2177,6 +2418,7 @@ function createControlHandler({
           String(body.path || body.id || body.taskId || ''),
           String(body.apiKey || ''),
           getServiceEnv ? getServiceEnv() : {},
+          String(body.target || 'local'),
         );
         sendJson(response, 200, result);
         return;

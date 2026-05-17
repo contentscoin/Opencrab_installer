@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import type { AgentAssetResult, CodexStatus, CodexTaskResult, DesktopStatus, GeneratedPack, IngestResearchDepth, IngestResearchField, LocalServicesStatus, OcNode, SourceType, UpdateStatus } from '../lib/api'
+import type { AgentAssetResult, CodexStatus, CodexTaskResult, DesktopStatus, GeneratedPack, IngestResearchDepth, IngestResearchField, IngestTarget, LocalServicesStatus, OcNode, SourceType, UpdateStatus } from '../lib/api'
 import {
   checkDesktopUpdate,
   getGeneratedPacks,
@@ -10,6 +10,7 @@ import {
   getDesktopStatus,
   getLocalServicesStatus,
   getPackSettings,
+  ingestCloudSource,
   ingestGeneratedPack,
   ingestSource,
   installAgentAssets,
@@ -74,11 +75,12 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
   const [queryText, setQueryText] = useState('')
   const [queryResults, setQueryResults] = useState<{ node_id: string | null; score?: number; text?: string | null }[]>([])
   const [querying, setQuerying] = useState(false)
+  const [ingestTarget, setIngestTarget] = useState<IngestTarget>('both')
   const [ingestSourceType, setIngestSourceType] = useState<SourceType>('obsidian')
   const [ingestToken, setIngestToken] = useState('')
   const [ingestQuery, setIngestQuery] = useState('')
   const [ingesting, setIngesting] = useState(false)
-  const [ingestPhase, setIngestPhase] = useState<'idle' | 'starting' | 'importing'>('idle')
+  const [ingestPhase, setIngestPhase] = useState<'idle' | 'starting' | 'importing' | 'cloud'>('idle')
   const [startingServices, setStartingServices] = useState(false)
   const [serviceStatus, setServiceStatus] = useState<LocalServicesStatus | null>(null)
   const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null)
@@ -221,16 +223,27 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
   async function handleIngest() {
     if (!ingestToken.trim()) return
     setIngesting(true)
-    setIngestPhase('starting')
+    const wantsLocal = ingestTarget === 'local' || ingestTarget === 'both'
+    const wantsCloud = ingestTarget === 'cloud' || ingestTarget === 'both'
+    setIngestPhase(wantsLocal ? 'starting' : 'cloud')
     try {
-      const status = await startLocalServices()
-      setServiceStatus(status)
-      setIngestPhase('importing')
-      await ingestSource(apiKey, ingestSourceType, ingestToken, { sourceId: ingestQuery || undefined })
-      showToast('Ingest complete')
+      if (wantsLocal) {
+        const status = await startLocalServices()
+        setServiceStatus(status)
+        setIngestPhase('importing')
+        await ingestSource(apiKey, ingestSourceType, ingestToken, { sourceId: ingestQuery || undefined })
+      }
+      if (wantsCloud) {
+        setIngestPhase('cloud')
+        await ingestCloudSource(ingestSourceType, ingestToken, {
+          sourceId: ingestQuery || undefined,
+          title: ingestQuery || 'Desktop ingest',
+        })
+      }
+      showToast(`Ingest complete (${ingestTarget === 'both' ? 'local + cloud' : ingestTarget})`)
       setIngestToken('')
       setIngestQuery('')
-      onRefresh()
+      if (wantsLocal) onRefresh()
     } catch (error) {
       showToast(String(error), 'error')
     } finally {
@@ -257,7 +270,7 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
     setAgentBusy(true)
     try {
       const result = await saveDesktopMcpUrl(mcpUrlInput.trim(), mcpApiKeyInput.trim())
-      showToast(`MCP ready: ${result.tools} tools`)
+      showToast(`MCP ready: ${result.tools} tools${result.mcpIngestAvailable ? ', ingest ready' : ''}`)
       setMcpUrlInput('')
       setMcpApiKeyInput('')
       await refreshDesktopStatus()
@@ -272,7 +285,7 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
     setAgentBusy(true)
     try {
       const result = await saveDesktopMcpUrlFromClipboard(mcpApiKeyInput.trim())
-      showToast(`MCP ready: ${result.tools} tools`)
+      showToast(`MCP ready: ${result.tools} tools${result.mcpIngestAvailable ? ', ingest ready' : ''}`)
       setMcpApiKeyInput('')
       await refreshDesktopStatus()
     } catch (error) {
@@ -425,11 +438,14 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
   async function handleIngestGeneratedPack(path: string) {
     setPackIngestingPath(path)
     try {
-      await startLocalServices()
-      await ingestGeneratedPack(path, apiKey)
+      const wantsLocal = ingestTarget === 'local' || ingestTarget === 'both'
+      if (wantsLocal) {
+        await startLocalServices()
+      }
+      await ingestGeneratedPack(path, apiKey, ingestTarget)
       await refreshGeneratedPacks()
-      onRefresh()
-      showToast('Generated pack ingested')
+      if (wantsLocal) onRefresh()
+      showToast(`Generated pack ingested (${ingestTarget === 'both' ? 'local + cloud' : ingestTarget})`)
     } catch (error) {
       showToast(String(error), 'error')
     } finally {
@@ -478,6 +494,14 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
       />
     </div>
   )
+
+  const ingestNeedsCloud = ingestTarget === 'cloud' || ingestTarget === 'both'
+  const cloudIngestReady = Boolean(desktopStatus?.mcpUrlConfigured && desktopStatus?.mcpIngestAvailable)
+  const cloudStatusText = !desktopStatus?.mcpUrlConfigured
+    ? 'not connected'
+    : desktopStatus?.mcpIngestAvailable
+      ? `ingest ready (${desktopStatus.mcpToolsCount ?? 0} tools)`
+      : `connected, ingest tool missing (${desktopStatus.mcpToolsCount ?? 0} tools)`
 
   return (
     <div
@@ -618,6 +642,22 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
               </div>
             </div>
             <div style={{ marginBottom: 8 }}>
+              <label style={{ fontSize: 11, color: '#7c6f64', display: 'block', marginBottom: 4 }}>Ingest target</label>
+              <select
+                className="input-dark"
+                value={ingestTarget}
+                onChange={(event) => setIngestTarget(event.target.value as IngestTarget)}
+                style={{ fontSize: 12 }}
+              >
+                <option value="both">Local + OpenCrab Cloud</option>
+                <option value="local">Local only</option>
+                <option value="cloud">OpenCrab Cloud only</option>
+              </select>
+              <div style={{ marginTop: 5, color: cloudIngestReady ? '#8ec07c' : '#fb4934', fontSize: 10, lineHeight: 1.4 }}>
+                OpenCrab MCP: {cloudStatusText}
+              </div>
+            </div>
+            <div style={{ marginBottom: 8 }}>
               <label style={{ fontSize: 11, color: '#7c6f64', display: 'block', marginBottom: 4 }}>Source type</label>
               <select
                 className="input-dark"
@@ -657,9 +697,9 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
               className="btn-gold"
               style={{ width: '100%' }}
               onClick={handleIngest}
-              disabled={ingesting || startingServices || !ingestToken.trim()}
+              disabled={ingesting || startingServices || !ingestToken.trim() || (ingestNeedsCloud && !cloudIngestReady)}
             >
-              {ingestPhase === 'starting' ? 'Starting Neo4j...' : ingestPhase === 'importing' ? 'Importing...' : 'Import Data'}
+              {ingestPhase === 'starting' ? 'Starting Neo4j...' : ingestPhase === 'importing' ? 'Importing locally...' : ingestPhase === 'cloud' ? 'Sending to OpenCrab...' : 'Import Data'}
             </button>
             <div style={{ marginTop: 8, fontSize: 10, color: '#555', lineHeight: 1.5 }}>
               Connected source data is converted into GraphRAG-ready ontology records.
@@ -716,7 +756,7 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
                         className="btn-gold"
                         style={{ fontSize: 10, padding: '4px 8px' }}
                         onClick={() => handleIngestGeneratedPack(pack.zipPath)}
-                        disabled={pack.exists === false || packIngestingPath === pack.zipPath || pack.status === 'ingested'}
+                        disabled={pack.exists === false || packIngestingPath === pack.zipPath || pack.status === 'ingested' || (ingestNeedsCloud && !cloudIngestReady)}
                       >
                         {packIngestingPath === pack.zipPath ? 'Ingesting...' : pack.status === 'ingested' ? 'Ingested' : 'Ingest ZIP'}
                       </button>
@@ -734,6 +774,9 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
               <div style={{ fontSize: 10, color: '#555', marginBottom: 4, letterSpacing: '0.06em' }}>MCP ENDPOINT</div>
               <div style={{ color: desktopStatus?.mcpUrlConfigured ? '#8ec07c' : '#fb4934', fontSize: 11, wordBreak: 'break-all' }}>
                 {desktopStatus?.mcpUrlConfigured ? desktopStatus.mcpUrl : 'not connected'}
+              </div>
+              <div style={{ color: cloudIngestReady ? '#8ec07c' : '#fb4934', fontSize: 10, marginTop: 4 }}>
+                tools: {desktopStatus?.mcpToolsCount ?? 0} · ingest: {desktopStatus?.mcpIngestAvailable ? 'ready' : 'missing'}
               </div>
             </div>
 

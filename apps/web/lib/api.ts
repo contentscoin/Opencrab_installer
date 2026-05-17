@@ -39,6 +39,7 @@ export interface QueryResult {
 }
 
 export type SourceType = 'obsidian' | 'notion' | 'gdrive' | 'github'
+export type IngestTarget = 'local' | 'cloud' | 'both'
 export type IngestResearchDepth = 'quick' | 'standard' | 'deep' | 'exhaustive'
 export type IngestResearchField =
   | 'subject'
@@ -55,6 +56,10 @@ export interface DesktopStatus {
   ok: boolean
   mcpUrlConfigured: boolean
   mcpUrl: string
+  mcpConnected?: boolean
+  mcpToolsCount?: number
+  mcpToolNames?: string[]
+  mcpIngestAvailable?: boolean
   oauthPending?: boolean
   apiUrl?: string
   localMcpUrl?: string
@@ -231,6 +236,35 @@ export async function ingestSource(
   return r.json()
 }
 
+export async function ingestCloudSource(
+  sourceType: SourceType | string,
+  text: string,
+  opts: {
+    sourceId?: string
+    sourceUrl?: string
+    title?: string
+    metadata?: Record<string, unknown>
+  } = {},
+): Promise<{ ok: boolean; tool?: string; tools?: number; result?: Record<string, unknown> }> {
+  const r = await fetch(`${desktopBase()}/desktop/cloud/ingest`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      text,
+      sourceType,
+      sourceId: opts.sourceId,
+      sourceUrl: opts.sourceUrl,
+      title: opts.title,
+      metadata: opts.metadata ?? {},
+    }),
+  })
+  const data = await r.json().catch(() => ({}))
+  if (!r.ok || data.ok === false) {
+    throw new Error(data.error || 'OpenCrab cloud ingest failed')
+  }
+  return data
+}
+
 export async function startLocalServices(): Promise<LocalServicesStatus> {
   const r = await fetch(`${desktopBase()}/desktop/services/start`, {
     method: 'POST',
@@ -351,7 +385,7 @@ export async function getDesktopStatus(): Promise<DesktopStatus> {
   }
 }
 
-export async function saveDesktopMcpUrl(url: string, apiKey = ''): Promise<{ mcpUrl: string; tools: number }> {
+export async function saveDesktopMcpUrl(url: string, apiKey = ''): Promise<{ mcpUrl: string; tools: number; mcpIngestAvailable?: boolean }> {
   const r = await fetch(`${desktopBase()}/desktop/mcp-url`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -361,10 +395,10 @@ export async function saveDesktopMcpUrl(url: string, apiKey = ''): Promise<{ mcp
   if (!r.ok || data.ok === false) {
     throw new Error(data.error || 'Failed to save MCP URL')
   }
-  return { mcpUrl: data.mcpUrl, tools: data.tools }
+  return { mcpUrl: data.mcpUrl, tools: data.tools, mcpIngestAvailable: data.mcpIngestAvailable }
 }
 
-export async function saveDesktopMcpUrlFromClipboard(apiKey = ''): Promise<{ mcpUrl: string; tools: number }> {
+export async function saveDesktopMcpUrlFromClipboard(apiKey = ''): Promise<{ mcpUrl: string; tools: number; mcpIngestAvailable?: boolean }> {
   const r = await fetch(`${desktopBase()}/desktop/mcp-url/clipboard`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -374,7 +408,7 @@ export async function saveDesktopMcpUrlFromClipboard(apiKey = ''): Promise<{ mcp
   if (!r.ok || data.ok === false) {
     throw new Error(data.error || 'Failed to save MCP URL from clipboard')
   }
-  return { mcpUrl: data.mcpUrl, tools: data.tools }
+  return { mcpUrl: data.mcpUrl, tools: data.tools, mcpIngestAvailable: data.mcpIngestAvailable }
 }
 
 export async function startDesktopOAuth(): Promise<{ authUrl: string; mode?: string }> {
@@ -506,11 +540,11 @@ export async function openGeneratedPack(path: string): Promise<{ ok: boolean; pa
   return data
 }
 
-export async function ingestGeneratedPack(path: string, apiKey: string): Promise<{ ok: boolean; pack: GeneratedPack; result: Record<string, unknown> }> {
+export async function ingestGeneratedPack(path: string, apiKey: string, target: IngestTarget = 'local'): Promise<{ ok: boolean; pack: GeneratedPack; result: Record<string, unknown> }> {
   const r = await fetch(`${desktopBase()}/desktop/packs/ingest`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path, apiKey }),
+    body: JSON.stringify({ path, apiKey, target }),
   })
   const data = await r.json().catch(() => ({}))
   if (!r.ok || data.ok === false) {

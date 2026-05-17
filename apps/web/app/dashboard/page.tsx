@@ -126,7 +126,7 @@ export default function DashboardPage() {
       const result = await saveDesktopMcpUrl(cloudMcpUrl.trim(), cloudApiKey.trim())
       setCloudMcpUrl('')
       setCloudApiKey('')
-      setCloudMessage(`MCP connected with ${result.tools} tools.`)
+      setCloudMessage(`MCP connected with ${result.tools} tools${result.mcpIngestAvailable ? ', ingest ready' : ''}.`)
       await refreshDesktopCloudStatus()
     } catch (error) {
       setCloudMessage(String(error))
@@ -140,7 +140,7 @@ export default function DashboardPage() {
     try {
       const result = await saveDesktopMcpUrlFromClipboard(cloudApiKey.trim())
       setCloudApiKey('')
-      setCloudMessage(`MCP connected with ${result.tools} tools.`)
+      setCloudMessage(`MCP connected with ${result.tools} tools${result.mcpIngestAvailable ? ', ingest ready' : ''}.`)
       await refreshDesktopCloudStatus()
     } catch (error) {
       setCloudMessage(String(error))
@@ -294,6 +294,9 @@ export default function DashboardPage() {
                 <div style={{ fontSize: 10, color: '#555', marginBottom: 4, letterSpacing: '0.06em' }}>MCP ENDPOINT</div>
                 <div style={{ color: desktopStatus?.mcpUrlConfigured ? '#8ec07c' : '#fb4934', fontSize: 11, wordBreak: 'break-all', marginBottom: 10 }}>
                   {desktopStatus?.mcpUrlConfigured ? desktopStatus.mcpUrl : 'not connected'}
+                </div>
+                <div style={{ color: desktopStatus?.mcpIngestAvailable ? '#8ec07c' : '#fb4934', fontSize: 10, marginBottom: 10 }}>
+                  tools: {desktopStatus?.mcpToolsCount ?? 0} · ingest: {desktopStatus?.mcpIngestAvailable ? 'ready' : 'missing'}
                 </div>
 
                 <input

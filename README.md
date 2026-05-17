@@ -176,13 +176,13 @@ The task file redacts OpenCrab MCP tokens, but the child Codex process receives 
 
 For local desktop runs, OpenCrab Desktop supplies the local API key to the dashboard and defaults `OPENCRAB_TIER` to `pro` unless the user overrides it. This keeps local text ingest from being blocked by the cloud free-tier source limit.
 
-The Ingest tab imports plain text/evidence into `/api/ingest` with the selected source type stored as metadata. Generated Codex ZIP packs still use the pack queue and `Ingest ZIP` action.
+The Ingest tab can import plain text/evidence into the local `/api/ingest` endpoint, the configured OpenCrab Cloud MCP endpoint, or both. The selected source type and source id are stored as metadata, and cloud ingest calls the MCP `opencrab_ingest_text`-style tool through `tools/call`.
 
 When `Research` is checked in the Agent tab, the task context also points Codex at the bundled `insane-search` skill and Python research engine. Use it for ontology-pack research, source discovery, blocked-page fallback fetching, public evidence collection, and entity/claim/source extraction before writing ingest files. Research outputs should be saved under `codex-workspace/opencrab_data/research` in packaged installs.
 
 When `Vision` is checked in the Agent tab, the task context points Codex at the bundled `multilingual-clip-vision` skill and helper engine. Use it for image datasets, product/package images, screenshots, multilingual visual labels, and image-based ontology packs. Vision outputs should be saved under `codex-workspace/opencrab_data/vision`. Heavy model dependencies are optional; install them only when needed with `python -m pip install multilingual-clip torch open_clip_torch pillow numpy transformers`, or set `OPENCRAB_INSTALL_VISION_DEPS=1` during installer builds to bundle them.
 
-When `Zip` is checked in the Agent tab, Codex is instructed to write pack artifacts under `codex-workspace/opencrab_data/packs/<task-id>`. After Codex finishes, OpenCrab Desktop automatically creates a `.zip` file in the selected Pack ZIP folder and adds it to the Ingest tab's queue. From there, open the folder or run `Ingest ZIP` to ingest text-readable pack files into the local OpenCrab API.
+When `Zip` is checked in the Agent tab, Codex is instructed to write pack artifacts under `codex-workspace/opencrab_data/packs/<task-id>`. After Codex finishes, OpenCrab Desktop automatically creates a `.zip` file in the selected Pack ZIP folder and adds it to the Ingest tab's queue. From there, open the folder or run `Ingest ZIP`; it uses the current Ingest target setting, so generated packs can go to local Neo4j-backed storage, OpenCrab Cloud, or both.
 
 Before running a Codex task, the Agent tab also has an `Ingest research` setting. Choose the depth (`Quick`, `Standard`, `Deep`, or `Exhaustive`) and select which ontology threads Codex should collect before building ingest files: subject, resource, evidence, concept, claim, community, outcome, lever, and policy. These settings are injected into the Codex task file and environment so generated packs include a research matrix, source metadata, confidence notes, and the selected data-value fields.
 
@@ -330,6 +330,13 @@ apps\desktop\dist\win-unpacked\OpenCrab.exe
 - Adds a bundled `engine.keyword_research` helper for Wikipedia, Wikidata, and OpenAlex source discovery.
 - Updates Codex task instructions so `insane-search` is only used with concrete URLs and never with placeholder values like `<URL>`.
 - Improves Playwright fallback errors so missing browser dependencies do not dump Node module stack traces or trap the task in repeated retries.
+
+### v1.0.17
+
+- Adds a real OpenCrab Cloud ingest path through the configured MCP endpoint using `tools/call`.
+- Shows MCP tool count and whether an ingest-capable tool is available in the Cloud and Agent panels.
+- Adds an Ingest target selector: `Local + OpenCrab Cloud`, `Local only`, or `OpenCrab Cloud only`.
+- Sends generated Codex ZIP packs to the selected ingest target, not only the local API.
 
 ## Attribution
 
