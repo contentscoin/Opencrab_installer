@@ -1,21 +1,27 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import type { AgentAssetResult, CodexStatus, CodexTaskResult, DesktopStatus, LocalServicesStatus, OcNode, SourceType, UpdateStatus } from '../lib/api'
+import type { AgentAssetResult, CodexStatus, CodexTaskResult, DesktopStatus, GeneratedPack, LocalServicesStatus, OcNode, SourceType, UpdateStatus } from '../lib/api'
 import {
   checkDesktopUpdate,
+  getGeneratedPacks,
   getCodexTask,
   getCodexStatus,
   getDesktopStatus,
   getLocalServicesStatus,
+  getPackSettings,
+  ingestGeneratedPack,
   ingestSource,
   installAgentAssets,
+  openGeneratedPack,
   openDesktopRelease,
   query,
   restartLocalServices,
   restartWebUi,
   runCodexTask,
   saveDesktopMcpUrl,
+  savePackSettings,
+  selectPackOutputDir,
   startDesktopOAuth,
   startLocalServices,
 } from '../lib/api'
@@ -77,6 +83,11 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
   const [codexEnsureServices, setCodexEnsureServices] = useState(true)
   const [codexUseResearch, setCodexUseResearch] = useState(true)
   const [codexUseVision, setCodexUseVision] = useState(true)
+  const [codexPackageOutput, setCodexPackageOutput] = useState(true)
+  const [packOutputDir, setPackOutputDir] = useState('')
+  const [packBusy, setPackBusy] = useState(false)
+  const [packIngestingPath, setPackIngestingPath] = useState('')
+  const [generatedPacks, setGeneratedPacks] = useState<GeneratedPack[]>([])
   const [codexBusy, setCodexBusy] = useState(false)
   const [codexResult, setCodexResult] = useState<CodexTaskResult | null>(null)
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null)
@@ -87,6 +98,8 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
     void refreshDesktopStatus()
     void refreshLocalServices()
     void refreshCodexStatus()
+    void refreshPackSettings()
+    void refreshGeneratedPacks()
     const timer = setInterval(() => void refreshLocalServices(), 15000)
     return () => clearInterval(timer)
   }, [])
@@ -107,6 +120,7 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
           showToast(task.status === 'completed' ? 'Codex task complete' : task.error || `Codex task ${task.status}`, task.status === 'completed' ? 'success' : 'error')
           await refreshCodexStatus()
           await refreshLocalServices()
+          await refreshGeneratedPacks()
         }
       } catch (error) {
         if (!cancelled) {
@@ -156,6 +170,24 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
   async function refreshCodexStatus() {
     const status = await getCodexStatus()
     setCodexStatus(status)
+  }
+
+  async function refreshPackSettings() {
+    try {
+      const settings = await getPackSettings()
+      setPackOutputDir(settings.outputDir)
+    } catch {
+      setPackOutputDir('')
+    }
+  }
+
+  async function refreshGeneratedPacks() {
+    try {
+      const packs = await getGeneratedPacks()
+      setGeneratedPacks(packs)
+    } catch {
+      setGeneratedPacks([])
+    }
   }
 
   async function handleQuery() {
@@ -260,6 +292,8 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
         ensureServices: codexEnsureServices,
         useResearchSkill: codexUseResearch,
         useVisionSkill: codexUseVision,
+        packageOutput: codexPackageOutput,
+        packOutputDir,
       })
       setCodexResult(result)
       showToast('Codex task started')
@@ -318,6 +352,69 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
       showToast(String(error), 'error')
       setOpsBusy(false)
     }
+  }
+
+  async function handleSelectPackOutputDir() {
+    setPackBusy(true)
+    try {
+      const settings = await selectPackOutputDir()
+      if (!settings.canceled) {
+        setPackOutputDir(settings.outputDir)
+        showToast('Pack folder saved')
+      }
+    } catch (error) {
+      showToast(String(error), 'error')
+    } finally {
+      setPackBusy(false)
+    }
+  }
+
+  async function handleSavePackOutputDir() {
+    if (!packOutputDir.trim()) return
+    setPackBusy(true)
+    try {
+      const settings = await savePackSettings(packOutputDir.trim())
+      setPackOutputDir(settings.outputDir)
+      showToast('Pack folder saved')
+    } catch (error) {
+      showToast(String(error), 'error')
+    } finally {
+      setPackBusy(false)
+    }
+  }
+
+  async function handleOpenPack(path: string) {
+    try {
+      await openGeneratedPack(path)
+    } catch (error) {
+      showToast(String(error), 'error')
+    }
+  }
+
+  async function handleIngestGeneratedPack(path: string) {
+    if (!apiKey.trim()) {
+      showToast('API key is required before ingesting a generated pack', 'error')
+      return
+    }
+    setPackIngestingPath(path)
+    try {
+      await startLocalServices()
+      await ingestGeneratedPack(path, apiKey)
+      await refreshGeneratedPacks()
+      onRefresh()
+      showToast('Generated pack ingested')
+    } catch (error) {
+      showToast(String(error), 'error')
+    } finally {
+      setPackIngestingPath('')
+    }
+  }
+
+  function formatBytes(bytes?: number) {
+    const value = bytes || 0
+    if (value < 1024) return `${value} B`
+    if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`
+    return `${(value / 1024 / 1024).toFixed(1)} MB`
   }
 
   function toggleSpace(space: string) {
@@ -533,6 +630,67 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
             <div style={{ marginTop: 8, fontSize: 10, color: '#555', lineHeight: 1.5 }}>
               Connected source data is converted into GraphRAG-ready ontology records.
             </div>
+
+            <hr className="gold-line" style={{ margin: '14px 0' }} />
+
+            <div style={{ marginBottom: 8 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                <span style={{ fontSize: 10, color: '#555', letterSpacing: '0.06em' }}>INGEST QUEUE</span>
+                <button className="btn-gold" style={{ fontSize: 10, padding: '3px 7px' }} onClick={refreshGeneratedPacks}>
+                  Refresh
+                </button>
+              </div>
+              {generatedPacks.length === 0 ? (
+                <div style={{ color: '#555', fontSize: 10, lineHeight: 1.5 }}>
+                  Codex-created ZIP packs will appear here automatically.
+                </div>
+              ) : (
+                generatedPacks.map((pack) => (
+                  <div
+                    key={`${pack.taskId}-${pack.zipPath}`}
+                    style={{
+                      padding: '8px 9px',
+                      marginBottom: 7,
+                      background: '#1f1f1f',
+                      borderRadius: 4,
+                      border: `1px solid ${pack.exists === false ? '#5a2c2c' : '#2e2e2e'}`,
+                      fontSize: 10,
+                    }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 3 }}>
+                      <span style={{ color: '#f8c537' }}>{pack.name}</span>
+                      <span style={{ color: pack.exists === false ? '#fb4934' : '#8ec07c' }}>
+                        {pack.exists === false ? 'missing' : pack.status || 'ready'}
+                      </span>
+                    </div>
+                    <div style={{ color: '#7c6f64', marginBottom: 4 }}>
+                      {formatBytes(pack.size)} · {pack.fileCount} files
+                    </div>
+                    <div className="mono" style={{ color: '#7c6f64', wordBreak: 'break-all', marginBottom: 6 }}>
+                      {pack.zipPath}
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+                      <button
+                        className="btn-gold"
+                        style={{ fontSize: 10, padding: '4px 8px' }}
+                        onClick={() => handleOpenPack(pack.zipPath)}
+                        disabled={pack.exists === false}
+                      >
+                        Open
+                      </button>
+                      <button
+                        className="btn-gold"
+                        style={{ fontSize: 10, padding: '4px 8px' }}
+                        onClick={() => handleIngestGeneratedPack(pack.zipPath)}
+                        disabled={pack.exists === false || packIngestingPath === pack.zipPath || pack.status === 'ingested'}
+                      >
+                        {packIngestingPath === pack.zipPath ? 'Ingesting...' : pack.status === 'ingested' ? 'Ingested' : 'Ingest ZIP'}
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
           </div>
         )}
 
@@ -630,6 +788,25 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
               style={{ marginBottom: 8, height: 96, fontSize: 11 }}
             />
 
+            <div style={{ marginBottom: 8 }}>
+              <label style={{ fontSize: 11, color: '#7c6f64', display: 'block', marginBottom: 4 }}>Pack ZIP folder</label>
+              <input
+                className="input-dark mono"
+                value={packOutputDir}
+                onChange={(event) => setPackOutputDir(event.target.value)}
+                placeholder="Default OpenCrab pack folder"
+                style={{ fontSize: 10, marginBottom: 6 }}
+              />
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+                <button className="btn-gold" style={{ fontSize: 10, padding: '4px 8px' }} onClick={handleSelectPackOutputDir} disabled={packBusy}>
+                  Browse
+                </button>
+                <button className="btn-gold" style={{ fontSize: 10, padding: '4px 8px' }} onClick={handleSavePackOutputDir} disabled={packBusy || !packOutputDir.trim()}>
+                  Save
+                </button>
+              </div>
+            </div>
+
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 8 }}>
               <select className="input-dark" value={codexModel} onChange={(event) => setCodexModel(event.target.value)} style={{ fontSize: 11 }}>
                 <option value="gpt-5.5">gpt-5.5</option>
@@ -689,6 +866,15 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
                   />
                   Vision
                 </label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 10, color: '#7c6f64', whiteSpace: 'nowrap' }}>
+                  <input
+                    type="checkbox"
+                    checked={codexPackageOutput}
+                    onChange={(event) => setCodexPackageOutput(event.target.checked)}
+                    style={{ accentColor: '#f8c537' }}
+                  />
+                  Zip
+                </label>
               </div>
             </div>
 
@@ -718,7 +904,7 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
                   </span>
                 </div>
                 <div className="mono" style={{ color: '#7c6f64', wordBreak: 'break-all', marginBottom: 6 }}>
-                  {codexResult.taskFile || codexResult.phase}
+                  {codexResult.packZipPath || codexResult.taskFile || codexResult.phase}
                 </div>
                 <div
                   ref={codexLogRef}

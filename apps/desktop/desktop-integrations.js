@@ -17,10 +17,12 @@ const DEFAULT_CODEX_PERMISSION = 'auto';
 const CODEX_TASK_TIMEOUT_MS = 30 * 60 * 1000;
 const CODEX_TASK_HISTORY_LIMIT = 20;
 const CODEX_TASK_MESSAGE_LIMIT = 400;
+const GENERATED_PACKS_LIMIT = 100;
 
 let controlServer;
 let pendingOAuth = null;
 const codexTasks = new Map();
+let crc32Table = null;
 
 function userEnvPath(app) {
   return path.join(app.getPath('userData'), '.env.local');
@@ -40,6 +42,20 @@ function readText(filePath) {
   } catch {
     return '';
   }
+}
+
+function readJsonFile(filePath, fallback) {
+  try {
+    if (!fs.existsSync(filePath)) return fallback;
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  } catch {
+    return fallback;
+  }
+}
+
+function writeJsonFile(filePath, data) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
 }
 
 function updateEnvFile(filePath, updates) {
@@ -555,6 +571,303 @@ function getCodexWorkspace(app, rootDir, requestedCwd = '') {
   return workspace;
 }
 
+function sanitizeFileName(value, fallback = 'opencrab-pack') {
+  const cleaned = String(value || '')
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, '-')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 80);
+  return cleaned || fallback;
+}
+
+function settingsPath(app) {
+  return path.join(app.getPath('userData'), 'desktop-settings.json');
+}
+
+function generatedPacksPath(app) {
+  return path.join(app.getPath('userData'), 'generated-packs.json');
+}
+
+function defaultPackOutputDir(app) {
+  return path.join(app.getPath('documents'), 'OpenCrab', 'Packs');
+}
+
+function getPackSettings(app) {
+  const settings = readJsonFile(settingsPath(app), {});
+  const outputDir = String(
+    settings.packOutputDir
+    || process.env.OPENCRAB_PACK_OUTPUT_DIR
+    || defaultPackOutputDir(app),
+  );
+  fs.mkdirSync(outputDir, { recursive: true });
+  return {
+    ok: true,
+    outputDir,
+    defaultOutputDir: defaultPackOutputDir(app),
+  };
+}
+
+function savePackOutputDir(app, outputDir) {
+  const resolved = path.resolve(String(outputDir || '').trim() || defaultPackOutputDir(app));
+  fs.mkdirSync(resolved, { recursive: true });
+  const settings = readJsonFile(settingsPath(app), {});
+  settings.packOutputDir = resolved;
+  writeJsonFile(settingsPath(app), settings);
+  return getPackSettings(app);
+}
+
+function listGeneratedPacks(app) {
+  const registry = readJsonFile(generatedPacksPath(app), { packs: [] });
+  const packs = Array.isArray(registry.packs) ? registry.packs : [];
+  return packs
+    .filter((pack) => pack && pack.zipPath)
+    .map((pack) => ({
+      ...pack,
+      exists: fs.existsSync(pack.zipPath),
+      size: fs.existsSync(pack.zipPath) ? fs.statSync(pack.zipPath).size : (pack.size || 0),
+    }))
+    .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+}
+
+function addGeneratedPack(app, record) {
+  const registry = readJsonFile(generatedPacksPath(app), { packs: [] });
+  const packs = Array.isArray(registry.packs) ? registry.packs : [];
+  const next = [
+    record,
+    ...packs.filter((pack) => pack.zipPath !== record.zipPath && pack.taskId !== record.taskId),
+  ].slice(0, GENERATED_PACKS_LIMIT);
+  writeJsonFile(generatedPacksPath(app), { packs: next });
+  return record;
+}
+
+function updateGeneratedPack(app, match, updates) {
+  const registry = readJsonFile(generatedPacksPath(app), { packs: [] });
+  const packs = Array.isArray(registry.packs) ? registry.packs : [];
+  const next = packs.map((pack) => (
+    pack.zipPath === match || pack.taskId === match || pack.id === match
+      ? { ...pack, ...updates }
+      : pack
+  ));
+  writeJsonFile(generatedPacksPath(app), { packs: next });
+  return next.find((pack) => pack.zipPath === match || pack.taskId === match || pack.id === match) || null;
+}
+
+function findGeneratedPack(app, match) {
+  return listGeneratedPacks(app).find((pack) => (
+    pack.zipPath === match || pack.taskId === match || pack.id === match
+  )) || null;
+}
+
+function isPackTextFile(filePath) {
+  return ['.md', '.txt', '.json', '.jsonl', '.csv', '.cypher', '.yaml', '.yml'].includes(path.extname(filePath).toLowerCase());
+}
+
+function readPackTextForIngest(pack) {
+  if (!pack?.workDir || !fs.existsSync(pack.workDir)) {
+    throw new Error('Pack staging directory is missing. Open the ZIP and ingest manually.');
+  }
+  const files = collectFiles(pack.workDir)
+    .filter((file) => isPackTextFile(file.fullPath));
+  if (files.length === 0) {
+    throw new Error('No ingest-readable text files found in this pack.');
+  }
+  const chunks = [];
+  let totalChars = 0;
+  const maxChars = 800000;
+  for (const file of files) {
+    const text = fs.readFileSync(file.fullPath, 'utf8');
+    const block = `\n\n--- FILE: ${file.relativePath} ---\n${text}`;
+    if (totalChars + block.length > maxChars) {
+      chunks.push('\n\n--- TRUNCATED: pack text exceeded desktop ingest preview limit ---\n');
+      break;
+    }
+    chunks.push(block);
+    totalChars += block.length;
+  }
+  return {
+    text: chunks.join('').trim(),
+    files,
+  };
+}
+
+function postLocalIngest(apiKey, payload) {
+  return new Promise((resolve, reject) => {
+    const body = JSON.stringify(payload);
+    const request = http.request({
+      hostname: '127.0.0.1',
+      port: 8080,
+      path: '/api/ingest',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(body),
+        Authorization: `Bearer ${apiKey}`,
+      },
+    }, (response) => {
+      let data = '';
+      response.on('data', (chunk) => {
+        data += chunk.toString();
+      });
+      response.on('end', () => {
+        let parsed = {};
+        try {
+          parsed = data ? JSON.parse(data) : {};
+        } catch {
+          parsed = { error: data };
+        }
+        if (response.statusCode && response.statusCode >= 200 && response.statusCode < 300) {
+          resolve(parsed);
+        } else {
+          reject(new Error(parsed.detail || parsed.error || `Ingest failed with status ${response.statusCode}`));
+        }
+      });
+    });
+    request.on('error', reject);
+    request.write(body);
+    request.end();
+  });
+}
+
+async function ingestGeneratedPack(app, match, apiKey, serviceEnv = {}) {
+  const pack = findGeneratedPack(app, match);
+  if (!pack) {
+    throw new Error('Generated pack not found.');
+  }
+  const token = String(apiKey || serviceEnv.OPENCRAB_API_KEY || '').trim();
+  if (!token) {
+    throw new Error('API key is required to ingest a generated pack.');
+  }
+  const { text, files } = readPackTextForIngest(pack);
+  const result = await postLocalIngest(token, {
+    text,
+    source_id: `opencrab-pack:${pack.taskId || path.basename(pack.zipPath)}`,
+    metadata: {
+      source_type: 'opencrab_generated_pack',
+      zip_path: pack.zipPath,
+      task_id: pack.taskId,
+      file_count: files.length,
+      files: files.map((file) => file.relativePath),
+    },
+  });
+  const updated = updateGeneratedPack(app, match, {
+    status: 'ingested',
+    ingestedAt: new Date().toISOString(),
+    ingestResult: result,
+  });
+  return { ok: true, pack: updated, result };
+}
+
+function dosDateTime(date = new Date()) {
+  const year = Math.max(date.getFullYear(), 1980);
+  const dosTime = (date.getHours() << 11) | (date.getMinutes() << 5) | Math.floor(date.getSeconds() / 2);
+  const dosDate = ((year - 1980) << 9) | ((date.getMonth() + 1) << 5) | date.getDate();
+  return { dosTime, dosDate };
+}
+
+function getCrc32Table() {
+  if (crc32Table) return crc32Table;
+  crc32Table = new Uint32Array(256);
+  for (let i = 0; i < 256; i += 1) {
+    let c = i;
+    for (let j = 0; j < 8; j += 1) {
+      c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+    }
+    crc32Table[i] = c >>> 0;
+  }
+  return crc32Table;
+}
+
+function crc32(buffer) {
+  const table = getCrc32Table();
+  let crc = 0xFFFFFFFF;
+  for (const byte of buffer) {
+    crc = table[(crc ^ byte) & 0xFF] ^ (crc >>> 8);
+  }
+  return (crc ^ 0xFFFFFFFF) >>> 0;
+}
+
+function collectFiles(dir, baseDir = dir) {
+  if (!fs.existsSync(dir)) return [];
+  const entries = [];
+  for (const item of fs.readdirSync(dir, { withFileTypes: true })) {
+    const fullPath = path.join(dir, item.name);
+    if (item.isDirectory()) {
+      entries.push(...collectFiles(fullPath, baseDir));
+    } else if (item.isFile()) {
+      const relativePath = path.relative(baseDir, fullPath).split(path.sep).join('/');
+      entries.push({ fullPath, relativePath });
+    }
+  }
+  return entries.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+}
+
+function createZipFile(zipPath, sources) {
+  const localParts = [];
+  const centralParts = [];
+  let offset = 0;
+
+  for (const source of sources) {
+    const data = source.data ? Buffer.from(source.data) : fs.readFileSync(source.fullPath);
+    const nameBuffer = Buffer.from(source.relativePath.split(path.sep).join('/'), 'utf8');
+    const dateInfo = source.fullPath && fs.existsSync(source.fullPath)
+      ? dosDateTime(fs.statSync(source.fullPath).mtime)
+      : dosDateTime(new Date());
+    const checksum = crc32(data);
+
+    const localHeader = Buffer.alloc(30);
+    localHeader.writeUInt32LE(0x04034b50, 0);
+    localHeader.writeUInt16LE(20, 4);
+    localHeader.writeUInt16LE(0, 6);
+    localHeader.writeUInt16LE(0, 8);
+    localHeader.writeUInt16LE(dateInfo.dosTime, 10);
+    localHeader.writeUInt16LE(dateInfo.dosDate, 12);
+    localHeader.writeUInt32LE(checksum, 14);
+    localHeader.writeUInt32LE(data.length, 18);
+    localHeader.writeUInt32LE(data.length, 22);
+    localHeader.writeUInt16LE(nameBuffer.length, 26);
+    localHeader.writeUInt16LE(0, 28);
+
+    localParts.push(localHeader, nameBuffer, data);
+
+    const centralHeader = Buffer.alloc(46);
+    centralHeader.writeUInt32LE(0x02014b50, 0);
+    centralHeader.writeUInt16LE(20, 4);
+    centralHeader.writeUInt16LE(20, 6);
+    centralHeader.writeUInt16LE(0, 8);
+    centralHeader.writeUInt16LE(0, 10);
+    centralHeader.writeUInt16LE(dateInfo.dosTime, 12);
+    centralHeader.writeUInt16LE(dateInfo.dosDate, 14);
+    centralHeader.writeUInt32LE(checksum, 16);
+    centralHeader.writeUInt32LE(data.length, 20);
+    centralHeader.writeUInt32LE(data.length, 24);
+    centralHeader.writeUInt16LE(nameBuffer.length, 28);
+    centralHeader.writeUInt16LE(0, 30);
+    centralHeader.writeUInt16LE(0, 32);
+    centralHeader.writeUInt16LE(0, 34);
+    centralHeader.writeUInt16LE(0, 36);
+    centralHeader.writeUInt32LE(0, 38);
+    centralHeader.writeUInt32LE(offset, 42);
+    centralParts.push(centralHeader, nameBuffer);
+
+    offset += localHeader.length + nameBuffer.length + data.length;
+  }
+
+  const centralSize = centralParts.reduce((sum, part) => sum + part.length, 0);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(0, 4);
+  end.writeUInt16LE(0, 6);
+  end.writeUInt16LE(sources.length, 8);
+  end.writeUInt16LE(sources.length, 10);
+  end.writeUInt32LE(centralSize, 12);
+  end.writeUInt32LE(offset, 16);
+  end.writeUInt16LE(0, 20);
+
+  fs.mkdirSync(path.dirname(zipPath), { recursive: true });
+  fs.writeFileSync(zipPath, Buffer.concat([...localParts, ...centralParts, end]));
+}
+
 function getCodexStatus(rootDir, serviceEnv = {}) {
   const env = buildCodexProcessEnv('', serviceEnv);
   const codexPath = findCodexCli(process.env.OPENCRAB_CODEX_CLI_PATH || '', env.PATH);
@@ -644,6 +957,22 @@ function getVisionContext(rootDir, env, enabled = true) {
   };
 }
 
+function getPackContext(app, cwd, taskId, body) {
+  const packageOutput = body.packageOutput !== false;
+  const outputDir = body.packOutputDir
+    ? savePackOutputDir(app, body.packOutputDir).outputDir
+    : getPackSettings(app).outputDir;
+  const workDir = path.join(cwd, 'opencrab_data', 'packs', taskId);
+  fs.mkdirSync(workDir, { recursive: true });
+  fs.mkdirSync(outputDir, { recursive: true });
+  return {
+    enabled: packageOutput,
+    workDir,
+    outputDir,
+    zipName: `${sanitizeFileName(`opencrab-pack-${taskId}`)}.zip`,
+  };
+}
+
 function buildCodexTaskContent({
   task,
   taskId,
@@ -655,12 +984,28 @@ function buildCodexTaskContent({
   mcpUrl,
   research,
   vision,
+  pack,
 }) {
   const neo4j = serviceStatus?.neo4j || {};
   const localMcp = 'http://127.0.0.1:8080/mcp';
   const configuredMcp = mcpUrl || serviceEnv.OPENCRAB_MCP_URL || localMcp;
   const ingestDir = path.join(cwd, 'opencrab_data', 'ingest');
   const visionDir = path.join(cwd, 'opencrab_data', 'vision');
+  const packBlock = pack?.enabled ? `
+## Pack Output
+
+- Pack staging directory: ${pack.workDir}
+- Pack ZIP output directory: ${pack.outputDir}
+- Pack ZIP file name: ${pack.zipName}
+- When creating an ontology pack, marketplace pack, image pack, or reusable ingest package, write every pack artifact under the pack staging directory.
+- Include a short README.md and a machine-readable manifest such as manifest.json or pack.yaml in the staging directory.
+- Put ingest-ready Markdown, JSONL, CSV, Cypher, or source evidence files in clear subfolders.
+- Do not create the ZIP yourself. OpenCrab Desktop automatically zips the staging directory after Codex finishes and adds it to the Generated Packs ingest list.
+` : `
+## Pack Output
+
+- Automatic pack ZIP creation is disabled for this task.
+`;
   const researchBlock = research?.available ? `
 ## Research Collection
 
@@ -727,6 +1072,7 @@ ${task}
 - Neo4j user: ${neo4j.username || serviceEnv.NEO4J_USER || 'neo4j'}
 - Neo4j password: ${serviceEnv.NEO4J_PASSWORD || 'opencrab'}
 - Default ingest output directory: ${ingestDir}
+${packBlock}
 ${researchBlock}
 ${visionBlock}
 
@@ -736,7 +1082,8 @@ ${visionBlock}
 - Use the local OpenCrab services and Neo4j connection when the task involves graph, ontology, or ingest work.
 - When the task asks for ontology pack creation, market/domain research, source discovery, blocked URL reading, Korean web sources, social platforms, media metadata, GitHub/arXiv/StackOverflow, or public evidence gathering, use the Research Collection instructions above.
 - When the task asks for image data analysis, product/package imagery, visual taxonomy, screenshots, or image-based ontology packs, use the Image Package Analysis instructions above.
-- If creating ingest files, put them under the default ingest output directory unless the user explicitly names another path.
+- If creating reusable pack files, use the Pack Output staging directory so OpenCrab Desktop can zip and register the pack automatically.
+- If creating loose ingest files rather than a pack, put them under the default ingest output directory unless the user explicitly names another path.
 - Prefer structured files such as Markdown, JSONL, CSV, or Cypher with clear source metadata.
 - Use the OpenCrab MCP endpoint through the configured environment variables when useful.
 - Do not print raw MCP URLs, API tokens, or secrets in your final answer.
@@ -768,6 +1115,8 @@ function serializeCodexTask(task) {
     finalMessage: task.finalMessage || '',
     error: task.error || '',
     exitCode: task.exitCode,
+    packZipPath: task.packZipPath || '',
+    packRecord: task.packRecord || null,
   };
 }
 
@@ -846,6 +1195,64 @@ function flushCodexStream(task, state, role, log) {
   }
 }
 
+function packageCodexPack(app, task, pack, taskFile, outputPath) {
+  if (!pack?.enabled) {
+    return null;
+  }
+
+  const files = collectFiles(pack.workDir).map((file) => ({
+    fullPath: file.fullPath,
+    relativePath: file.relativePath,
+  }));
+  const metadata = {
+    taskId: task.taskId,
+    createdAt: new Date().toISOString(),
+    prompt: task.prompt || '',
+    workspace: task.cwd || '',
+    packWorkDir: pack.workDir,
+  };
+  const sourceSet = new Set(files.map((file) => file.relativePath));
+  if (!sourceSet.has('opencrab-pack-metadata.json')) {
+    files.push({
+      relativePath: 'opencrab-pack-metadata.json',
+      data: `${JSON.stringify(metadata, null, 2)}\n`,
+    });
+  }
+  if (taskFile && fs.existsSync(taskFile) && !sourceSet.has('codex-task.md')) {
+    files.push({ fullPath: taskFile, relativePath: 'codex-task.md' });
+  }
+  if (outputPath && fs.existsSync(outputPath) && !sourceSet.has('codex-final.md')) {
+    files.push({ fullPath: outputPath, relativePath: 'codex-final.md' });
+  } else if (task.finalMessage && !sourceSet.has('codex-final.md')) {
+    files.push({ relativePath: 'codex-final.md', data: `${task.finalMessage}\n` });
+  }
+  if (files.length === 1 && files[0].relativePath === 'opencrab-pack-metadata.json') {
+    files.push({
+      relativePath: 'README.md',
+      data: '# OpenCrab Generated Pack\n\nCodex did not write additional pack artifacts into the staging directory. Review the task output before ingesting this package.\n',
+    });
+  }
+
+  const zipPath = path.join(pack.outputDir, pack.zipName);
+  createZipFile(zipPath, files);
+  const stat = fs.statSync(zipPath);
+  const record = addGeneratedPack(app, {
+    id: `${task.taskId}`,
+    taskId: task.taskId,
+    name: pack.zipName.replace(/\.zip$/i, ''),
+    zipPath,
+    outputDir: pack.outputDir,
+    workDir: pack.workDir,
+    createdAt: new Date().toISOString(),
+    size: stat.size,
+    fileCount: files.length,
+    status: 'ready',
+  });
+  task.packZipPath = zipPath;
+  task.packRecord = record;
+  return record;
+}
+
 async function runCodexTaskInBackground({ app, rootDir, log, ensureLocalServices, getLocalServicesStatus, getServiceEnv, body, taskRecord }) {
   const task = taskRecord;
   const requestText = String(body.prompt || body.task || '').trim();
@@ -875,13 +1282,24 @@ async function runCodexTaskInBackground({ app, rootDir, log, ensureLocalServices
     fs.mkdirSync(path.join(cwd, 'opencrab_data', 'ingest'), { recursive: true });
     fs.mkdirSync(path.join(cwd, 'opencrab_data', 'research'), { recursive: true });
     fs.mkdirSync(path.join(cwd, 'opencrab_data', 'vision'), { recursive: true });
+    fs.mkdirSync(path.join(cwd, 'opencrab_data', 'packs'), { recursive: true });
 
     const model = normalizeCodexModel(body.model || process.env.OPENCRAB_CODEX_MODEL);
     const reasoning = normalizeCodexReasoning(body.reasoningEffort || process.env.OPENCRAB_CODEX_REASONING);
     const permission = normalizeCodexPermission(body.permissionMode || process.env.OPENCRAB_CODEX_PERMISSION);
     const timeoutMs = normalizeTimeoutMs(body.timeoutMs);
+    const pack = getPackContext(app, cwd, task.taskId, body);
+    env.OPENCRAB_PACK_WORK_DIR = pack.workDir;
+    env.OPENCRAB_PACK_OUTPUT_DIR = pack.outputDir;
     const research = getResearchContext(rootDir, env, body.useResearchSkill !== false);
     const vision = getVisionContext(rootDir, env, body.useVisionSkill !== false);
+    appendCodexProgress(
+      task,
+      'system',
+      pack.enabled
+        ? `Pack ZIP output: ${path.join(pack.outputDir, pack.zipName)}`
+        : 'Pack ZIP output disabled.',
+    );
     appendCodexProgress(
       task,
       'system',
@@ -906,6 +1324,7 @@ async function runCodexTaskInBackground({ app, rootDir, log, ensureLocalServices
       mcpUrl: currentMcpUrl(),
       research,
       vision,
+      pack,
     });
     const outputPath = path.join(path.dirname(taskFile), `opencrab-codex-result-${taskId}.md`);
 
@@ -941,6 +1360,7 @@ async function runCodexTaskInBackground({ app, rootDir, log, ensureLocalServices
       taskFile,
       outputFile: outputPath,
       cwd,
+      prompt: requestText,
       codexPath,
       model,
       reasoningEffort: reasoning,
@@ -1045,6 +1465,15 @@ async function runCodexTaskInBackground({ app, rootDir, log, ensureLocalServices
         if (finalMessage) {
           appendCodexMessage(task, 'final', finalMessage);
         }
+        try {
+          const packRecord = packageCodexPack(app, task, pack, taskFile, outputPath);
+          if (packRecord) {
+            appendCodexProgress(task, 'system', `Pack ZIP saved and added to ingest list: ${packRecord.zipPath}`);
+          }
+        } catch (error) {
+          task.error = redactSensitiveText(`Pack ZIP creation failed: ${error && error.message ? error.message : String(error)}`);
+          appendCodexProgress(task, 'error', task.error);
+        }
         appendCodexProgress(task, 'system', 'Codex task complete.');
         log('Codex Task', `completed ${taskId}`);
         resolve();
@@ -1090,6 +1519,9 @@ function runCodexTask({ app, rootDir, log, ensureLocalServices, getLocalServices
     finalMessage: '',
     error: '',
     exitCode: null,
+    packZipPath: '',
+    packRecord: null,
+    prompt: task,
   };
   rememberCodexTask(taskRecord);
   appendCodexMessage(taskRecord, 'user', task);
@@ -1355,6 +1787,7 @@ function readJsonBody(request) {
 
 function createControlHandler({
   app,
+  dialog,
   shell,
   rootDir,
   log,
@@ -1418,6 +1851,16 @@ function createControlHandler({
         return;
       }
 
+      if (request.method === 'GET' && url.pathname === '/desktop/packs/settings') {
+        sendJson(response, 200, getPackSettings(app));
+        return;
+      }
+
+      if (request.method === 'GET' && url.pathname === '/desktop/packs') {
+        sendJson(response, 200, { ok: true, packs: listGeneratedPacks(app) });
+        return;
+      }
+
       if (request.method === 'GET' && url.pathname === '/desktop/update/check') {
         const status = checkForUpdates ? await checkForUpdates() : { ok: false, error: 'Update checker is not available.' };
         sendJson(response, status.ok === false ? 500 : 200, status);
@@ -1442,6 +1885,55 @@ function createControlHandler({
         const authUrl = buildOAuthUrl(getPort());
         await shell.openExternal(authUrl);
         sendJson(response, 200, { ok: true, authUrl });
+        return;
+      }
+
+      if (request.method === 'POST' && url.pathname === '/desktop/packs/settings') {
+        sendJson(response, 200, savePackOutputDir(app, String(body.outputDir || '')));
+        return;
+      }
+
+      if (request.method === 'POST' && url.pathname === '/desktop/packs/select-output-dir') {
+        if (!dialog) {
+          sendJson(response, 500, { ok: false, error: 'Directory picker is not available.' });
+          return;
+        }
+        const current = getPackSettings(app).outputDir;
+        const result = await dialog.showOpenDialog({
+          title: 'Select OpenCrab pack ZIP output folder',
+          defaultPath: current,
+          properties: ['openDirectory', 'createDirectory'],
+        });
+        if (result.canceled || !result.filePaths?.[0]) {
+          sendJson(response, 200, { ok: true, canceled: true, ...getPackSettings(app) });
+          return;
+        }
+        sendJson(response, 200, { canceled: false, ...savePackOutputDir(app, result.filePaths[0]) });
+        return;
+      }
+
+      if (request.method === 'POST' && url.pathname === '/desktop/packs/open') {
+        const targetPath = String(body.path || '').trim();
+        if (!targetPath) {
+          sendJson(response, 400, { ok: false, error: 'Path is required.' });
+          return;
+        }
+        const openTarget = fs.existsSync(targetPath) && fs.statSync(targetPath).isFile()
+          ? path.dirname(targetPath)
+          : targetPath;
+        const message = await shell.openPath(openTarget);
+        sendJson(response, message ? 500 : 200, { ok: !message, error: message || '', path: openTarget });
+        return;
+      }
+
+      if (request.method === 'POST' && url.pathname === '/desktop/packs/ingest') {
+        const result = await ingestGeneratedPack(
+          app,
+          String(body.path || body.id || body.taskId || ''),
+          String(body.apiKey || ''),
+          getServiceEnv ? getServiceEnv() : {},
+        );
+        sendJson(response, 200, result);
         return;
       }
 
@@ -1515,6 +2007,7 @@ function createControlHandler({
 
 function startControlServer({
   app,
+  dialog,
   shell,
   rootDir,
   log,
@@ -1539,6 +2032,7 @@ function startControlServer({
       activePort = port;
       const server = http.createServer(createControlHandler({
         app,
+        dialog,
         shell,
         rootDir,
         log,

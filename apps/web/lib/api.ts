@@ -86,6 +86,29 @@ export interface CodexTaskResult {
   finalMessage: string
   error?: string
   exitCode?: number | null
+  packZipPath?: string
+  packRecord?: GeneratedPack | null
+}
+
+export interface PackSettings {
+  ok: boolean
+  outputDir: string
+  defaultOutputDir: string
+  canceled?: boolean
+}
+
+export interface GeneratedPack {
+  id: string
+  taskId: string
+  name: string
+  zipPath: string
+  outputDir: string
+  workDir: string
+  createdAt: string
+  size: number
+  fileCount: number
+  status: string
+  exists?: boolean
 }
 
 export interface LocalServicesStatus {
@@ -356,6 +379,8 @@ export async function runCodexTask(input: {
   ensureServices?: boolean
   useResearchSkill?: boolean
   useVisionSkill?: boolean
+  packageOutput?: boolean
+  packOutputDir?: string
 }): Promise<CodexTaskResult> {
   const r = await fetch(`${desktopBase()}/desktop/codex/task`, {
     method: 'POST',
@@ -374,6 +399,76 @@ export async function getCodexTask(taskId: string): Promise<CodexTaskResult> {
   const data = await r.json().catch(() => ({}))
   if (!r.ok || data.ok === false) {
     throw new Error(data.error || 'Codex task status unavailable')
+  }
+  return data
+}
+
+export async function getPackSettings(): Promise<PackSettings> {
+  const r = await fetch(`${desktopBase()}/desktop/packs/settings`, { cache: 'no-store' })
+  const data = await r.json().catch(() => ({}))
+  if (!r.ok || data.ok === false) {
+    throw new Error(data.error || 'Pack settings unavailable')
+  }
+  return data
+}
+
+export async function savePackSettings(outputDir: string): Promise<PackSettings> {
+  const r = await fetch(`${desktopBase()}/desktop/packs/settings`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ outputDir }),
+  })
+  const data = await r.json().catch(() => ({}))
+  if (!r.ok || data.ok === false) {
+    throw new Error(data.error || 'Failed to save pack output folder')
+  }
+  return data
+}
+
+export async function selectPackOutputDir(): Promise<PackSettings> {
+  const r = await fetch(`${desktopBase()}/desktop/packs/select-output-dir`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  })
+  const data = await r.json().catch(() => ({}))
+  if (!r.ok || data.ok === false) {
+    throw new Error(data.error || 'Failed to select pack output folder')
+  }
+  return data
+}
+
+export async function getGeneratedPacks(): Promise<GeneratedPack[]> {
+  const r = await fetch(`${desktopBase()}/desktop/packs`, { cache: 'no-store' })
+  const data = await r.json().catch(() => ({}))
+  if (!r.ok || data.ok === false) {
+    throw new Error(data.error || 'Generated pack list unavailable')
+  }
+  return data.packs ?? []
+}
+
+export async function openGeneratedPack(path: string): Promise<{ ok: boolean; path: string }> {
+  const r = await fetch(`${desktopBase()}/desktop/packs/open`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path }),
+  })
+  const data = await r.json().catch(() => ({}))
+  if (!r.ok || data.ok === false) {
+    throw new Error(data.error || 'Failed to open generated pack')
+  }
+  return data
+}
+
+export async function ingestGeneratedPack(path: string, apiKey: string): Promise<{ ok: boolean; pack: GeneratedPack; result: Record<string, unknown> }> {
+  const r = await fetch(`${desktopBase()}/desktop/packs/ingest`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path, apiKey }),
+  })
+  const data = await r.json().catch(() => ({}))
+  if (!r.ok || data.ok === false) {
+    throw new Error(data.error || 'Failed to ingest generated pack')
   }
   return data
 }

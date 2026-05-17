@@ -34,6 +34,7 @@ Added desktop pieces:
 - Live Codex CLI task log in the Agent tab, including setup steps, Codex progress, stderr, and final response
 - Bundled `insane-search` research skill/engine for ontology-pack source collection through Codex tasks
 - Bundled Multilingual-CLIP/OpenCLIP vision skill for image dataset analysis and image-based pack generation
+- Codex-generated packs are saved as ZIP files, registered in the Ingest queue, and can be stored in a user-selected folder
 
 ## Download
 
@@ -149,6 +150,8 @@ When `Neo4j` is checked in the Agent tab, OpenCrab Desktop starts the local Neo4
 - `OPENCRAB_MCP_API_KEY`
 - `OPENCRAB_CODEX_TASK_FILE`
 - `OPENCRAB_PYTHON`
+- `OPENCRAB_PACK_WORK_DIR`
+- `OPENCRAB_PACK_OUTPUT_DIR`
 - `OPENCRAB_RESEARCH_SKILL_DIR`
 - `OPENCRAB_RESEARCH_ENGINE_DIR`
 - `OPENCRAB_VISION_SKILL_DIR`
@@ -162,6 +165,8 @@ The task file redacts OpenCrab MCP tokens, but the child Codex process receives 
 When `Research` is checked in the Agent tab, the task context also points Codex at the bundled `insane-search` skill and Python research engine. Use it for ontology-pack research, source discovery, blocked-page fallback fetching, public evidence collection, and entity/claim/source extraction before writing ingest files. Research outputs should be saved under `codex-workspace/opencrab_data/research` in packaged installs.
 
 When `Vision` is checked in the Agent tab, the task context points Codex at the bundled `multilingual-clip-vision` skill and helper engine. Use it for image datasets, product/package images, screenshots, multilingual visual labels, and image-based ontology packs. Vision outputs should be saved under `codex-workspace/opencrab_data/vision`. Heavy model dependencies are optional; install them only when needed with `python -m pip install multilingual-clip torch open_clip_torch pillow numpy transformers`, or set `OPENCRAB_INSTALL_VISION_DEPS=1` during installer builds to bundle them.
+
+When `Zip` is checked in the Agent tab, Codex is instructed to write pack artifacts under `codex-workspace/opencrab_data/packs/<task-id>`. After Codex finishes, OpenCrab Desktop automatically creates a `.zip` file in the selected Pack ZIP folder and adds it to the Ingest tab's queue. From there, open the folder or run `Ingest ZIP` to ingest text-readable pack files into the local OpenCrab API.
 
 ## Signing And Notarization
 
@@ -260,6 +265,13 @@ apps\desktop\dist\win-unpacked\OpenCrab.exe
 - Adds a `Vision` toggle to Codex tasks and injects the vision skill path, engine path, model defaults, Python command, and output directory into the task context.
 - Installs the vision skill into generated Codex/Claude/project/plugin assets alongside the OpenCrab MCP and research skills.
 - Keeps heavy vision dependencies optional by default, with `OPENCRAB_INSTALL_VISION_DEPS=1` available for builds that intentionally bundle them.
+
+### v1.0.10
+
+- Adds a selectable Pack ZIP folder for Codex-generated ontology packs.
+- Adds automatic ZIP packaging for Codex pack staging directories after a task completes.
+- Adds a generated pack Ingest queue in the Ingest tab with open-folder and `Ingest ZIP` actions.
+- Persists generated pack records and ZIP output settings in the desktop user data directory.
 
 ## Attribution
 

@@ -18,6 +18,7 @@ const ENV_FILE_KEYS = new Set([
   'OPENCRAB_MCP_URL',
   'OPENCRAB_MCP_API_KEY',
   'OPENCRAB_PYTHON',
+  'OPENCRAB_PACK_OUTPUT_DIR',
   'OPENCRAB_VISION_MODEL',
   'OPENCRAB_VISION_ENCODER',
   'OPENCRAB_VISION_PRETRAINED',
@@ -242,6 +243,7 @@ function buildServiceEnv(controlPort = getControlPort()) {
     OPENCRAB_MCP_API_KEY: process.env.OPENCRAB_MCP_API_KEY || '',
     OPENCRAB_TIER: process.env.OPENCRAB_TIER || 'free',
     OPENCRAB_PYTHON: process.env.OPENCRAB_PYTHON || getPythonPath(getRootDir()),
+    OPENCRAB_PACK_OUTPUT_DIR: process.env.OPENCRAB_PACK_OUTPUT_DIR || '',
     OPENCRAB_VISION_MODEL: process.env.OPENCRAB_VISION_MODEL || 'M-CLIP/XLM-Roberta-Large-Vit-B-32',
     OPENCRAB_VISION_ENCODER: process.env.OPENCRAB_VISION_ENCODER || 'ViT-B-32',
     OPENCRAB_VISION_PRETRAINED: process.env.OPENCRAB_VISION_PRETRAINED || 'openai',
@@ -1275,6 +1277,7 @@ async function startServices() {
   activeServiceEnv = buildServiceEnv();
   const controlPort = await startControlServer({
     app,
+    dialog,
     shell,
     rootDir,
     log,
