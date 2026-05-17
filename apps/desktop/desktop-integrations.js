@@ -13,9 +13,12 @@ const DEFAULT_CODEX_MODEL = 'gpt-5.5';
 const DEFAULT_CODEX_REASONING = 'high';
 const DEFAULT_CODEX_PERMISSION = 'auto';
 const CODEX_TASK_TIMEOUT_MS = 30 * 60 * 1000;
+const CODEX_TASK_HISTORY_LIMIT = 20;
+const CODEX_TASK_MESSAGE_LIMIT = 400;
 
 let controlServer;
 let pendingOAuth = null;
+const codexTasks = new Map();
 
 function userEnvPath(app) {
   return path.join(app.getPath('userData'), '.env.local');
@@ -527,7 +530,7 @@ function formatProgressLine(line) {
   if (/^approval:/i.test(cleaned)) return cleaned;
   if (/^sandbox:/i.test(cleaned)) return cleaned;
   if (/^session id:/i.test(cleaned)) return cleaned;
-  if (/\bERROR\b/.test(cleaned)) return cleaned;
+  if (/\b(error|warning|failed)\b/i.test(cleaned)) return cleaned.slice(0, 240);
   if (/^(read|write|edit|apply|patch|search|run|exec|open|thinking|reasoning|update|create|delete|move|list|find|scan|inspect|build|test|verify|commit|tag|push|install|copy|generate|ingest)\b/i.test(cleaned)) return cleaned.slice(0, 240);
   if (/^(reading|writing|editing|applying|searching|running|executing|opening|creating|deleting|moving|listing|finding|scanning|inspecting|building|testing|verifying|committing|tagging|pushing|installing|copying|generating|ingesting)\b/i.test(cleaned)) return cleaned.slice(0, 240);
   if (/^(rg|sed|cat|ls|git|npm|node|tsc|mkdir|cp|mv|python|python3|gh|codex|docker)\b/i.test(cleaned)) return cleaned.slice(0, 240);
@@ -578,8 +581,12 @@ function getCodexStatus(rootDir, serviceEnv = {}) {
   };
 }
 
+function createCodexTaskId() {
+  return `${new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z')}-${randomBase64Url(4)}`;
+}
+
 function createCodexTaskFile(app, taskContext) {
-  const taskId = `${new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z')}-${randomBase64Url(4)}`;
+  const taskId = taskContext.taskId || createCodexTaskId();
   const taskDir = path.join(app.getPath('userData'), 'codex-tasks');
   fs.mkdirSync(taskDir, { recursive: true });
   const taskFile = path.join(taskDir, `opencrab-codex-task-${taskId}.md`);
@@ -637,158 +644,361 @@ ${task}
 `;
 }
 
-async function runCodexTask({ app, rootDir, log, ensureLocalServices, getLocalServicesStatus, getServiceEnv, body }) {
+function serializeCodexTask(task) {
+  if (!task) {
+    return null;
+  }
+  return {
+    ok: true,
+    taskId: task.taskId,
+    status: task.status,
+    phase: task.phase,
+    startedAt: task.startedAt,
+    updatedAt: task.updatedAt,
+    completedAt: task.completedAt || '',
+    taskFile: task.taskFile || '',
+    outputFile: task.outputFile || '',
+    cwd: task.cwd || '',
+    codexPath: task.codexPath || '',
+    model: task.model || '',
+    reasoningEffort: task.reasoningEffort || '',
+    permissionMode: task.permissionMode || '',
+    progress: task.progress || [],
+    messages: task.messages || [],
+    finalMessage: task.finalMessage || '',
+    error: task.error || '',
+    exitCode: task.exitCode,
+  };
+}
+
+function rememberCodexTask(task) {
+  codexTasks.set(task.taskId, task);
+  const completed = [...codexTasks.values()]
+    .filter((item) => item.completedAt)
+    .sort((a, b) => String(a.completedAt).localeCompare(String(b.completedAt)));
+  while (codexTasks.size > CODEX_TASK_HISTORY_LIMIT && completed.length > 0) {
+    const oldest = completed.shift();
+    if (oldest) codexTasks.delete(oldest.taskId);
+  }
+}
+
+function touchCodexTask(task) {
+  task.updatedAt = new Date().toISOString();
+}
+
+function appendCodexMessage(task, role, text) {
+  const cleaned = redactSensitiveText(String(text || '').trim());
+  if (!cleaned) return;
+  const message = {
+    id: `${Date.now()}-${task.messages.length}`,
+    at: new Date().toISOString(),
+    role,
+    text: cleaned.slice(0, 4000),
+  };
+  task.messages.push(message);
+  if (task.messages.length > CODEX_TASK_MESSAGE_LIMIT) {
+    task.messages.splice(0, task.messages.length - CODEX_TASK_MESSAGE_LIMIT);
+  }
+  touchCodexTask(task);
+}
+
+function appendCodexProgress(task, role, text) {
+  const cleaned = redactSensitiveText(String(text || '').trim());
+  if (!cleaned) return;
+  const last = task.progress[task.progress.length - 1];
+  if (last !== cleaned) {
+    task.progress.push(cleaned);
+    if (task.progress.length > 160) task.progress.shift();
+  }
+  appendCodexMessage(task, role, cleaned);
+}
+
+function setCodexTaskState(task, status, phase, message) {
+  task.status = status;
+  task.phase = phase;
+  touchCodexTask(task);
+  if (message) {
+    appendCodexProgress(task, 'system', message);
+  }
+}
+
+function consumeCodexStream(task, chunk, state, role, log) {
+  state.buffer += chunk.toString().replace(/\r(?!\n)/g, '\n');
+  const lines = state.buffer.split(/\r?\n/);
+  state.buffer = lines.pop() || '';
+  for (const line of lines) {
+    const formatted = formatProgressLine(line);
+    if (formatted && formatted !== state.last) {
+      state.last = formatted;
+      appendCodexProgress(task, role, formatted);
+      log('Codex Task', redactSensitiveText(formatted));
+    }
+  }
+}
+
+function flushCodexStream(task, state, role, log) {
+  const formatted = formatProgressLine(state.buffer);
+  state.buffer = '';
+  if (formatted && formatted !== state.last) {
+    state.last = formatted;
+    appendCodexProgress(task, role, formatted);
+    log('Codex Task', redactSensitiveText(formatted));
+  }
+}
+
+async function runCodexTaskInBackground({ app, rootDir, log, ensureLocalServices, getLocalServicesStatus, getServiceEnv, body, taskRecord }) {
+  const task = taskRecord;
+  const requestText = String(body.prompt || body.task || '').trim();
+
+  try {
+    setCodexTaskState(task, 'running', 'services', body.ensureServices !== false ? 'Checking local OpenCrab services and Neo4j...' : 'Reading local service status...');
+
+    const serviceEnv = getServiceEnv ? { ...getServiceEnv() } : {};
+    let serviceStatus = null;
+    if (body.ensureServices !== false && ensureLocalServices) {
+      serviceStatus = await ensureLocalServices();
+    } else if (getLocalServicesStatus) {
+      serviceStatus = await getLocalServicesStatus();
+    }
+
+    appendCodexProgress(task, 'system', serviceStatus?.ok ? 'Local OpenCrab services are ready.' : 'Continuing with local service status unavailable.');
+    setCodexTaskState(task, 'running', 'codex', 'Locating Codex CLI...');
+
+    const env = buildCodexProcessEnv(String(body.environmentVariables || ''), serviceEnv);
+    const codexPath = findCodexCli(String(body.codexPath || process.env.OPENCRAB_CODEX_CLI_PATH || ''), env.PATH);
+    if (!codexPath) {
+      throw new Error('Codex CLI not found. Install with `npm install -g @openai/codex`, then run `codex login`.');
+    }
+
+    env.PATH = mergePath(env.PATH, [path.dirname(codexPath)]);
+    const cwd = getCodexWorkspace(app, rootDir, body.cwd);
+    fs.mkdirSync(path.join(cwd, 'opencrab_data', 'ingest'), { recursive: true });
+
+    const model = normalizeCodexModel(body.model || process.env.OPENCRAB_CODEX_MODEL);
+    const reasoning = normalizeCodexReasoning(body.reasoningEffort || process.env.OPENCRAB_CODEX_REASONING);
+    const permission = normalizeCodexPermission(body.permissionMode || process.env.OPENCRAB_CODEX_PERMISSION);
+    const timeoutMs = normalizeTimeoutMs(body.timeoutMs);
+    const { taskId, taskFile, content } = createCodexTaskFile(app, {
+      taskId: task.taskId,
+      task: requestText,
+      rootDir,
+      cwd,
+      serviceStatus,
+      serviceEnv: env,
+      mcpUrl: currentMcpUrl(),
+    });
+    const outputPath = path.join(path.dirname(taskFile), `opencrab-codex-result-${taskId}.md`);
+
+    env.OPENCRAB_CODEX_TASK_FILE = taskFile;
+    env.OPENCRAB_CODEX_TASK_ID = taskId;
+    env.OPENCRAB_CODEX_WORKSPACE = cwd;
+    env.OPENCRAB_DESKTOP_ROOT = rootDir;
+
+    const args = [
+      'exec',
+      '--color',
+      'never',
+      '--output-last-message',
+      outputPath,
+      '--skip-git-repo-check',
+      '--cd',
+      cwd,
+      '--model',
+      model,
+      '--config',
+      `model_reasoning_effort="${reasoning}"`,
+    ];
+
+    if (permission === 'yolo') {
+      args.splice(1, 0, '--dangerously-bypass-approvals-and-sandbox');
+    } else if (permission === 'auto') {
+      args.splice(1, 0, '--full-auto');
+    } else {
+      args.splice(1, 0, '--sandbox', 'workspace-write');
+    }
+
+    Object.assign(task, {
+      taskFile,
+      outputFile: outputPath,
+      cwd,
+      codexPath,
+      model,
+      reasoningEffort: reasoning,
+      permissionMode: permission,
+    });
+    touchCodexTask(task);
+
+    const spawnTarget = resolveCodexSpawnTarget(codexPath, args);
+    const stdoutState = { buffer: '', last: '' };
+    const stderrState = { buffer: '', last: '' };
+    let stderrRaw = '';
+    let timedOut = false;
+
+    appendCodexProgress(task, 'system', `Starting Codex CLI with ${path.basename(codexPath)} in ${cwd}`);
+    log('Codex Task', `starting ${taskId} with ${path.basename(codexPath)} in ${cwd}`);
+
+    await new Promise((resolve) => {
+      const child = spawn(spawnTarget.command, spawnTarget.args, {
+        env,
+        cwd,
+        shell: spawnTarget.shell,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        windowsHide: true,
+      });
+
+      task.pid = child.pid || null;
+      touchCodexTask(task);
+
+      const timeout = setTimeout(() => {
+        timedOut = true;
+        setCodexTaskState(task, 'timed_out', 'timeout', `Codex task timed out after ${Math.round(timeoutMs / 1000)} seconds.`);
+        try {
+          child.kill();
+        } catch {
+          // Best effort only.
+        }
+      }, timeoutMs);
+
+      child.stdin?.end(content);
+
+      child.stdout.on('data', (chunk) => {
+        consumeCodexStream(task, chunk, stdoutState, 'codex', log);
+      });
+
+      child.stderr.on('data', (chunk) => {
+        stderrRaw += chunk.toString();
+        consumeCodexStream(task, chunk, stderrState, 'stderr', log);
+      });
+
+      child.on('error', (error) => {
+        clearTimeout(timeout);
+        task.status = 'failed';
+        task.phase = 'error';
+        task.error = redactSensitiveText(error.message || String(error));
+        task.completedAt = new Date().toISOString();
+        appendCodexProgress(task, 'error', task.error);
+        resolve();
+      });
+
+      child.on('close', (code, signal) => {
+        clearTimeout(timeout);
+        flushCodexStream(task, stdoutState, 'codex', log);
+        flushCodexStream(task, stderrState, 'stderr', log);
+        task.pid = null;
+        task.exitCode = code;
+
+        if (timedOut) {
+          task.completedAt = new Date().toISOString();
+          touchCodexTask(task);
+          resolve();
+          return;
+        }
+
+        if (signal) {
+          task.status = 'failed';
+          task.phase = 'error';
+          task.error = `Codex exited after signal ${signal}.`;
+          task.completedAt = new Date().toISOString();
+          appendCodexProgress(task, 'error', task.error);
+          resolve();
+          return;
+        }
+
+        if (code && code !== 0) {
+          task.status = 'failed';
+          task.phase = 'error';
+          task.error = `Codex exited with code ${code}: ${redactSensitiveText(stderrRaw).slice(0, 2000)}`;
+          task.completedAt = new Date().toISOString();
+          appendCodexProgress(task, 'error', task.error);
+          resolve();
+          return;
+        }
+
+        const finalMessage = fs.existsSync(outputPath)
+          ? redactSensitiveText(fs.readFileSync(outputPath, 'utf8').trim())
+          : '';
+
+        task.status = 'completed';
+        task.phase = 'done';
+        task.finalMessage = finalMessage;
+        task.completedAt = new Date().toISOString();
+        if (finalMessage) {
+          appendCodexMessage(task, 'final', finalMessage);
+        }
+        appendCodexProgress(task, 'system', 'Codex task complete.');
+        log('Codex Task', `completed ${taskId}`);
+        resolve();
+      });
+    });
+  } catch (error) {
+    task.status = 'failed';
+    task.phase = 'error';
+    task.error = redactSensitiveText(error && error.message ? error.message : String(error));
+    task.completedAt = new Date().toISOString();
+    appendCodexProgress(task, 'error', task.error);
+    log('Codex Task ERR', task.error);
+  } finally {
+    touchCodexTask(task);
+  }
+}
+
+function runCodexTask({ app, rootDir, log, ensureLocalServices, getLocalServicesStatus, getServiceEnv, body }) {
   const task = String(body.prompt || body.task || '').trim();
   if (!task) {
     throw new Error('Codex task prompt is required.');
   }
 
-  const serviceEnv = getServiceEnv ? { ...getServiceEnv() } : {};
-  let serviceStatus = null;
-  if (body.ensureServices !== false && ensureLocalServices) {
-    serviceStatus = await ensureLocalServices();
-  } else if (getLocalServicesStatus) {
-    serviceStatus = await getLocalServicesStatus();
-  }
-
-  const env = buildCodexProcessEnv(String(body.environmentVariables || ''), serviceEnv);
-  const codexPath = findCodexCli(String(body.codexPath || process.env.OPENCRAB_CODEX_CLI_PATH || ''), env.PATH);
-  if (!codexPath) {
-    throw new Error('Codex CLI not found. Install with `npm install -g @openai/codex`, then run `codex login`.');
-  }
-
-  env.PATH = mergePath(env.PATH, [path.dirname(codexPath)]);
-  const cwd = getCodexWorkspace(app, rootDir, body.cwd);
-  fs.mkdirSync(path.join(cwd, 'opencrab_data', 'ingest'), { recursive: true });
-
-  const model = normalizeCodexModel(body.model || process.env.OPENCRAB_CODEX_MODEL);
-  const reasoning = normalizeCodexReasoning(body.reasoningEffort || process.env.OPENCRAB_CODEX_REASONING);
-  const permission = normalizeCodexPermission(body.permissionMode || process.env.OPENCRAB_CODEX_PERMISSION);
-  const timeoutMs = normalizeTimeoutMs(body.timeoutMs);
-  const { taskId, taskFile, content } = createCodexTaskFile(app, {
-    task,
-    rootDir,
-    cwd,
-    serviceStatus,
-    serviceEnv: env,
-    mcpUrl: currentMcpUrl(),
-  });
-  const outputPath = path.join(path.dirname(taskFile), `opencrab-codex-result-${taskId}.md`);
-
-  env.OPENCRAB_CODEX_TASK_FILE = taskFile;
-  env.OPENCRAB_CODEX_TASK_ID = taskId;
-  env.OPENCRAB_CODEX_WORKSPACE = cwd;
-  env.OPENCRAB_DESKTOP_ROOT = rootDir;
-
-  const args = [
-    'exec',
-    '--color',
-    'never',
-    '--output-last-message',
-    outputPath,
-    '--skip-git-repo-check',
-    '--cd',
-    cwd,
-    '--model',
-    model,
-    '--config',
-    `model_reasoning_effort="${reasoning}"`,
-  ];
-
-  if (permission === 'yolo') {
-    args.splice(1, 0, '--dangerously-bypass-approvals-and-sandbox');
-  } else if (permission === 'auto') {
-    args.splice(1, 0, '--full-auto');
-  } else {
-    args.splice(1, 0, '--sandbox', 'workspace-write');
-  }
-
-  const spawnTarget = resolveCodexSpawnTarget(codexPath, args);
-  const progress = [];
-  let stdoutBuffer = '';
-  let stderrBuffer = '';
-  let lastProgress = '';
-  let timedOut = false;
-
-  log('Codex Task', `starting ${taskId} with ${path.basename(codexPath)} in ${cwd}`);
-
-  await new Promise((resolve, reject) => {
-    const child = spawn(spawnTarget.command, spawnTarget.args, {
-      env,
-      cwd,
-      shell: spawnTarget.shell,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      windowsHide: true,
-    });
-
-    const timeout = setTimeout(() => {
-      timedOut = true;
-      try {
-        child.kill();
-      } catch {
-        // Best effort only.
-      }
-    }, timeoutMs);
-
-    child.stdin?.end(content);
-
-    child.stdout.on('data', (chunk) => {
-      stdoutBuffer += chunk.toString();
-      const lines = stdoutBuffer.split(/\r?\n/);
-      stdoutBuffer = lines.pop() || '';
-      for (const line of lines) {
-        const formatted = formatProgressLine(line);
-        if (formatted && formatted !== lastProgress) {
-          lastProgress = formatted;
-          progress.push(redactSensitiveText(formatted));
-          if (progress.length > 120) progress.shift();
-          log('Codex Task', redactSensitiveText(formatted));
-        }
-      }
-    });
-
-    child.stderr.on('data', (chunk) => {
-      stderrBuffer += chunk.toString();
-    });
-
-    child.on('error', (error) => {
-      clearTimeout(timeout);
-      reject(error);
-    });
-
-    child.on('close', (code) => {
-      clearTimeout(timeout);
-      if (timedOut) {
-        reject(new Error(`Codex task timed out after ${Math.round(timeoutMs / 1000)}s.`));
-        return;
-      }
-      if (code && code !== 0) {
-        reject(new Error(`Codex exited with code ${code}: ${redactSensitiveText(stderrBuffer || stdoutBuffer).slice(0, 2000)}`));
-        return;
-      }
-      resolve();
-    });
-  });
-
-  const finalMessage = fs.existsSync(outputPath)
-    ? redactSensitiveText(fs.readFileSync(outputPath, 'utf8').trim())
-    : '';
-
-  log('Codex Task', `completed ${taskId}`);
-
-  return {
+  const taskId = createCodexTaskId();
+  const now = new Date().toISOString();
+  const taskRecord = {
     ok: true,
     taskId,
-    taskFile,
-    outputFile: outputPath,
-    cwd,
-    codexPath,
-    model,
-    reasoningEffort: reasoning,
-    permissionMode: permission,
-    progress,
-    finalMessage,
+    status: 'starting',
+    phase: 'queued',
+    startedAt: now,
+    updatedAt: now,
+    completedAt: '',
+    taskFile: '',
+    outputFile: '',
+    cwd: '',
+    codexPath: '',
+    model: '',
+    reasoningEffort: '',
+    permissionMode: '',
+    progress: [],
+    messages: [],
+    finalMessage: '',
+    error: '',
+    exitCode: null,
   };
+  rememberCodexTask(taskRecord);
+  appendCodexMessage(taskRecord, 'user', task);
+  appendCodexProgress(taskRecord, 'system', 'Codex task queued.');
+
+  setImmediate(() => {
+    runCodexTaskInBackground({
+      app,
+      rootDir,
+      log,
+      ensureLocalServices,
+      getLocalServicesStatus,
+      getServiceEnv,
+      body,
+      taskRecord,
+    });
+  });
+
+  return serializeCodexTask(taskRecord);
+}
+
+function getCodexTask(taskId) {
+  return serializeCodexTask(codexTasks.get(taskId));
+}
+
+function listCodexTasks() {
+  return [...codexTasks.values()]
+    .sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)))
+    .map(serializeCodexTask);
 }
 
 function registerCodexMcp(serverFile) {
@@ -1053,6 +1263,22 @@ function createControlHandler({
 
       if (request.method === 'GET' && url.pathname === '/desktop/codex/status') {
         sendJson(response, 200, getCodexStatus(rootDir, getServiceEnv ? getServiceEnv() : {}));
+        return;
+      }
+
+      if (request.method === 'GET' && url.pathname === '/desktop/codex/task') {
+        const taskId = url.searchParams.get('id') || '';
+        const taskStatus = getCodexTask(taskId);
+        if (!taskStatus) {
+          sendJson(response, 404, { ok: false, error: 'Codex task not found.' });
+          return;
+        }
+        sendJson(response, 200, taskStatus);
+        return;
+      }
+
+      if (request.method === 'GET' && url.pathname === '/desktop/codex/tasks') {
+        sendJson(response, 200, { ok: true, tasks: listCodexTasks() });
         return;
       }
 

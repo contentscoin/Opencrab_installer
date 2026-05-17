@@ -31,6 +31,7 @@ Added desktop pieces:
 - Dashboard `Ops` tab for manual service start/restart, web UI restart, and update checks
 - Dashboard `opencrab.sh` tab for opening the cloud OpenCrab page inside the desktop workspace
 - Static packaged web UI so installers no longer unpack the full Next.js `node_modules` tree
+- Live Codex CLI task log in the Agent tab, including setup steps, Codex progress, stderr, and final response
 
 ## Download
 
@@ -225,6 +226,12 @@ apps\desktop\dist\win-unpacked\OpenCrab.exe
 - Speeds up Windows installation by packaging the dashboard as static web output instead of unpacking the full Next.js runtime and `node_modules`.
 - Serves the packaged dashboard from the Electron main process and proxies `/desktop/*` calls to the active desktop control server.
 - Keeps the development flow on Next.js dev server while using the lighter static server only for packaged builds.
+
+### v1.0.7
+
+- Changes Codex CLI tasks from a blocking request into a background task with a pollable status endpoint.
+- Adds live Agent tab messages for user prompt, setup steps, Codex stdout/stderr progress, errors, and final response.
+- Keeps recent Codex task history in the desktop control server so the UI can continue showing progress while a task is running.
 
 ## Attribution
 

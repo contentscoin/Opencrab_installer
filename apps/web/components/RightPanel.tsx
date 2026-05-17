@@ -1,9 +1,10 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { AgentAssetResult, CodexStatus, CodexTaskResult, DesktopStatus, LocalServicesStatus, OcNode, SourceType, UpdateStatus } from '../lib/api'
 import {
   checkDesktopUpdate,
+  getCodexTask,
   getCodexStatus,
   getDesktopStatus,
   getLocalServicesStatus,
@@ -78,6 +79,7 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
   const [codexResult, setCodexResult] = useState<CodexTaskResult | null>(null)
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null)
   const [opsBusy, setOpsBusy] = useState(false)
+  const codexLogRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
     void refreshDesktopStatus()
@@ -86,6 +88,49 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
     const timer = setInterval(() => void refreshLocalServices(), 15000)
     return () => clearInterval(timer)
   }, [])
+
+  useEffect(() => {
+    if (!codexBusy || !codexResult?.taskId || isCodexTerminalStatus(codexResult.status)) {
+      return
+    }
+
+    let cancelled = false
+    const poll = async () => {
+      try {
+        const task = await getCodexTask(codexResult.taskId)
+        if (cancelled) return
+        setCodexResult(task)
+        if (isCodexTerminalStatus(task.status)) {
+          setCodexBusy(false)
+          showToast(task.status === 'completed' ? 'Codex task complete' : task.error || `Codex task ${task.status}`, task.status === 'completed' ? 'success' : 'error')
+          await refreshCodexStatus()
+          await refreshLocalServices()
+        }
+      } catch (error) {
+        if (!cancelled) {
+          showToast(String(error), 'error')
+        }
+      }
+    }
+
+    void poll()
+    const timer = setInterval(() => void poll(), 1500)
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
+  }, [codexBusy, codexResult?.taskId])
+
+  useEffect(() => {
+    const node = codexLogRef.current
+    if (node) {
+      node.scrollTop = node.scrollHeight
+    }
+  }, [codexResult?.messages?.length, codexResult?.finalMessage])
+
+  function isCodexTerminalStatus(status?: string) {
+    return status === 'completed' || status === 'failed' || status === 'timed_out' || status === 'canceled'
+  }
 
   function showToast(msg: string, type: 'success' | 'error' = 'success') {
     setToast({ msg, type })
@@ -213,12 +258,9 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
         ensureServices: codexEnsureServices,
       })
       setCodexResult(result)
-      showToast('Codex task complete')
-      await refreshCodexStatus()
-      await refreshLocalServices()
+      showToast('Codex task started')
     } catch (error) {
       showToast(String(error), 'error')
-    } finally {
       setCodexBusy(false)
     }
   }
@@ -632,7 +674,7 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
               onClick={handleRunCodexTask}
               disabled={codexBusy || !codexPrompt.trim() || !codexStatus?.available}
             >
-              {codexBusy ? 'Running Codex...' : 'Run Codex Task'}
+              {codexBusy ? `Codex: ${codexResult?.phase || 'starting'}` : 'Run Codex Task'}
             </button>
 
             {codexResult && (
@@ -645,20 +687,49 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
                   fontSize: 10,
                 }}
               >
-                <div style={{ color: '#f8c537', marginBottom: 4 }}>Task {codexResult.taskId}</div>
-                <div className="mono" style={{ color: '#7c6f64', wordBreak: 'break-all', marginBottom: 6 }}>
-                  {codexResult.taskFile}
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 4 }}>
+                  <span style={{ color: '#f8c537' }}>Task {codexResult.taskId}</span>
+                  <span style={{ color: codexResult.status === 'completed' ? '#8ec07c' : codexResult.status === 'failed' || codexResult.status === 'timed_out' ? '#fb4934' : '#bdae93' }}>
+                    {codexResult.status}
+                  </span>
                 </div>
-                {codexResult.progress.slice(-5).map((line, index) => (
-                  <div key={`${line}-${index}`} style={{ color: '#bdae93', marginBottom: 3 }}>
-                    {line}
-                  </div>
-                ))}
-                {codexResult.finalMessage && (
-                  <div style={{ color: '#faf2d6', whiteSpace: 'pre-wrap', marginTop: 6 }}>
-                    {codexResult.finalMessage.slice(0, 1200)}
-                  </div>
-                )}
+                <div className="mono" style={{ color: '#7c6f64', wordBreak: 'break-all', marginBottom: 6 }}>
+                  {codexResult.taskFile || codexResult.phase}
+                </div>
+                <div
+                  ref={codexLogRef}
+                  style={{
+                    maxHeight: 260,
+                    overflowY: 'auto',
+                    border: '1px solid #2e2e2e',
+                    borderRadius: 4,
+                    padding: 6,
+                    background: '#151515',
+                  }}
+                >
+                  {(codexResult.messages && codexResult.messages.length > 0
+                    ? codexResult.messages
+                    : codexResult.progress.map((line, index) => ({ id: `${index}`, role: 'codex', text: line, at: '' }))
+                  ).map((message) => {
+                    const role = message.role || 'codex'
+                    const color = role === 'user' ? '#f8c537' : role === 'error' || role === 'stderr' ? '#fb4934' : role === 'final' ? '#faf2d6' : role === 'system' ? '#8ec07c' : '#bdae93'
+                    return (
+                      <div key={message.id} style={{ marginBottom: 8 }}>
+                        <div style={{ color: '#555', fontSize: 9, marginBottom: 2, textTransform: 'uppercase' }}>
+                          {role}
+                        </div>
+                        <div style={{ color, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                          {message.text.slice(0, role === 'final' ? 2000 : 900)}
+                        </div>
+                      </div>
+                    )
+                  })}
+                  {codexBusy && (
+                    <div style={{ color: '#7c6f64' }}>
+                      Waiting for Codex output...
+                    </div>
+                  )}
+                </div>
               </div>
             )}
           </div>

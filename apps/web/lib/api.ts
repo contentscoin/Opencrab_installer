@@ -64,6 +64,11 @@ export interface CodexStatus {
 export interface CodexTaskResult {
   ok: boolean
   taskId: string
+  status: 'starting' | 'running' | 'completed' | 'failed' | 'timed_out' | string
+  phase: string
+  startedAt: string
+  updatedAt: string
+  completedAt?: string
   taskFile: string
   outputFile: string
   cwd: string
@@ -72,7 +77,15 @@ export interface CodexTaskResult {
   reasoningEffort: string
   permissionMode: string
   progress: string[]
+  messages?: Array<{
+    id: string
+    at: string
+    role: 'user' | 'system' | 'codex' | 'stderr' | 'final' | 'error' | string
+    text: string
+  }>
   finalMessage: string
+  error?: string
+  exitCode?: number | null
 }
 
 export interface LocalServicesStatus {
@@ -350,6 +363,15 @@ export async function runCodexTask(input: {
   const data = await r.json().catch(() => ({}))
   if (!r.ok || data.ok === false) {
     throw new Error(data.error || 'Codex task failed')
+  }
+  return data
+}
+
+export async function getCodexTask(taskId: string): Promise<CodexTaskResult> {
+  const r = await fetch(`${desktopBase()}/desktop/codex/task?id=${encodeURIComponent(taskId)}`, { cache: 'no-store' })
+  const data = await r.json().catch(() => ({}))
+  if (!r.ok || data.ok === false) {
+    throw new Error(data.error || 'Codex task status unavailable')
   }
   return data
 }
