@@ -1716,6 +1716,7 @@ function buildCodexTaskContent({
   ingestResearch,
 }) {
   const neo4j = serviceStatus?.neo4j || {};
+  const storageMode = serviceStatus?.storageMode || serviceEnv.STORAGE_MODE || 'local';
   const localMcp = 'http://127.0.0.1:8080/mcp';
   const configuredMcp = mcpUrl || serviceEnv.OPENCRAB_MCP_URL || localMcp;
   const ingestDir = path.join(cwd, 'opencrab_data', 'ingest');
@@ -1813,10 +1814,12 @@ ${task}
 - FastAPI: http://127.0.0.1:8080
 - Local MCP: ${localMcp}
 - Configured MCP: ${configuredMcp ? redactMcpUrl(configuredMcp) : 'not configured'}
-- Neo4j Browser: ${neo4j.browserUrl || serviceEnv.NEO4J_BROWSER_URL || 'http://localhost:7475'}
-- Neo4j Bolt: ${neo4j.boltUrl || serviceEnv.NEO4J_URI || 'bolt://localhost:7688'}
-- Neo4j user: ${neo4j.username || serviceEnv.NEO4J_USER || 'neo4j'}
-- Neo4j password: ${serviceEnv.NEO4J_PASSWORD || 'opencrab'}
+- Storage mode: ${storageMode}
+- Graph store: ${storageMode === 'docker' ? 'Neo4j via Docker' : 'Local SQLite graph store (no Docker required)'}
+- Neo4j Browser: ${storageMode === 'docker' ? (neo4j.browserUrl || serviceEnv.NEO4J_BROWSER_URL || 'http://localhost:7475') : 'not used in local mode'}
+- Neo4j Bolt: ${storageMode === 'docker' ? (neo4j.boltUrl || serviceEnv.NEO4J_URI || 'bolt://localhost:7688') : 'not used in local mode'}
+- Neo4j user: ${storageMode === 'docker' ? (neo4j.username || serviceEnv.NEO4J_USER || 'neo4j') : 'not used in local mode'}
+- Neo4j password: ${storageMode === 'docker' ? (serviceEnv.NEO4J_PASSWORD || 'opencrab') : 'not used in local mode'}
 - Default ingest output directory: ${ingestDir}
 ${packBlock}
 ${buildIngestResearchBlock(ingestResearch)}
@@ -1826,7 +1829,7 @@ ${visionBlock}
 ## Operating Instructions
 
 - You are Codex running from OpenCrab Desktop, modeled after the Codexian CLI workflow.
-- Use the local OpenCrab services and Neo4j connection when the task involves graph, ontology, or ingest work.
+- Use the local OpenCrab services for graph, ontology, or ingest work. When storage mode is local, do not require Neo4j or Docker; use the OpenCrab API/MCP and local pack files.
 - Work in visible phases and print a short status line before each phase: PLAN, SOURCE DISCOVERY, SOURCE CHECK, PACK WRITING, VERIFY. The desktop app shows these lines in the chat log.
 - During long source discovery, print STATUS lines after each meaningful group of sources, with current counts and what you are doing next.
 - For research-heavy pack work, aim for the configured source target, evidence target, social/community target, and search round count before declaring the pack complete. If the target cannot be reached, write a gap report with the reason and the attempted queries/sources.
@@ -2012,7 +2015,7 @@ async function runCodexTaskInBackground({ app, rootDir, log, ensureLocalServices
   const requestText = String(body.prompt || body.task || '').trim();
 
   try {
-    setCodexTaskState(task, 'running', 'services', body.ensureServices !== false ? 'Checking local OpenCrab services and Neo4j...' : 'Reading local service status...');
+    setCodexTaskState(task, 'running', 'services', body.ensureServices !== false ? 'Checking local OpenCrab services and graph storage...' : 'Reading local service status...');
 
     const serviceEnv = getServiceEnv ? { ...getServiceEnv() } : {};
     let serviceStatus = null;
@@ -2022,7 +2025,13 @@ async function runCodexTaskInBackground({ app, rootDir, log, ensureLocalServices
       serviceStatus = await getLocalServicesStatus();
     }
 
-    appendCodexProgress(task, 'system', serviceStatus?.ok ? 'Local OpenCrab services are ready.' : 'Continuing with local service status unavailable.');
+    appendCodexProgress(
+      task,
+      'system',
+      serviceStatus?.ok
+        ? `Local OpenCrab services are ready (${serviceStatus.storageMode || 'local'} storage).`
+        : 'Continuing with local service status unavailable.',
+    );
     setCodexTaskState(task, 'running', 'codex', 'Locating Codex CLI...');
 
     const env = buildCodexProcessEnv(String(body.environmentVariables || ''), serviceEnv);
@@ -2609,6 +2618,8 @@ function createControlHandler({
   restartWebUi,
   checkForUpdates,
   openReleasePage,
+  openDockerInstall,
+  setStorageMode,
   getPort,
 }) {
   return async (request, response) => {
@@ -2635,6 +2646,8 @@ function createControlHandler({
           apiUrl: serviceEnv.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8080',
           localMcpUrl: 'http://127.0.0.1:8080/mcp',
           localApiKey: serviceEnv.OPENCRAB_API_KEY || process.env.OPENCRAB_API_KEY || 'local-opencrab-key',
+          storageMode: serviceEnv.STORAGE_MODE || 'local',
+          localDataDir: serviceEnv.LOCAL_DATA_DIR || '',
         });
         return;
       }
@@ -2839,6 +2852,24 @@ function createControlHandler({
         return;
       }
 
+      if (request.method === 'POST' && url.pathname === '/desktop/docker/install') {
+        const result = openDockerInstall
+          ? await openDockerInstall()
+          : await shell.openExternal('https://docs.docker.com/desktop/').then(() => ({ ok: true }));
+        sendJson(response, 200, result);
+        return;
+      }
+
+      if (request.method === 'POST' && url.pathname === '/desktop/storage/mode') {
+        if (!setStorageMode) {
+          sendJson(response, 500, { ok: false, error: 'Storage mode switching is not available.' });
+          return;
+        }
+        const result = await setStorageMode(String(body.mode || 'auto'));
+        sendJson(response, 200, result);
+        return;
+      }
+
       if (request.method === 'POST' && url.pathname === '/desktop/web/restart') {
         if (!restartWebUi) {
           sendJson(response, 500, { ok: false, error: 'Web UI restart is not available.' });
@@ -2918,6 +2949,8 @@ function startControlServer({
   restartWebUi,
   checkForUpdates,
   openReleasePage,
+  openDockerInstall,
+  setStorageMode,
 }) {
   if (controlServer) {
     return Promise.resolve(controlServer.address()?.port || DEFAULT_CONTROL_PORT);
@@ -2944,6 +2977,8 @@ function startControlServer({
         restartWebUi,
         checkForUpdates,
         openReleasePage,
+        openDockerInstall,
+        setStorageMode,
         getPort: () => activePort,
       }));
 
@@ -3021,5 +3056,6 @@ module.exports = {
   saveMcpUrl,
   startControlServer,
   testMcpUrl,
+  updateEnvFile,
   userEnvPath,
 };

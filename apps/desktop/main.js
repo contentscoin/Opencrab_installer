@@ -9,6 +9,7 @@ const treeKill = require('tree-kill');
 const {
   registerProtocolHandler,
   startControlServer,
+  updateEnvFile,
   userEnvPath,
 } = require('./desktop-integrations');
 
@@ -155,6 +156,7 @@ let mainWindow;
 const processes = [];
 const managedServices = new Map();
 let activeServiceEnv = null;
+let activeDockerStatus = null;
 let ensureLocalServicesPromise = null;
 let isQuitting = false;
 let serviceMonitorInterval = null;
@@ -240,13 +242,109 @@ function getControlPort() {
   return Number(process.env.OPENCRAB_DESKTOP_CONTROL_PORT || '18273');
 }
 
-function buildServiceEnv(controlPort = getControlPort()) {
+function normalizeStorageMode(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  return ['auto', 'local', 'docker'].includes(normalized) ? normalized : 'auto';
+}
+
+function requestedStorageMode() {
+  return normalizeStorageMode(process.env.OPENCRAB_DESKTOP_STORAGE_MODE || process.env.STORAGE_MODE || 'auto');
+}
+
+function getLocalDataDir() {
+  return process.env.OPENCRAB_DESKTOP_LOCAL_DATA_DIR
+    || process.env.LOCAL_DATA_DIR
+    || path.join(app.getPath('userData'), 'local-data');
+}
+
+function getDockerInstallUrl() {
+  if (process.platform === 'darwin') {
+    return 'https://docs.docker.com/desktop/setup/install/mac-install/';
+  }
+  if (process.platform === 'linux') {
+    return 'https://docs.docker.com/engine/install/';
+  }
+  return 'https://docs.docker.com/desktop/setup/install/windows-install/';
+}
+
+async function detectDockerStatus() {
+  const cli = await captureOnce('docker', ['--version'], { timeoutMs: 10000 });
+  if (cli.code !== 0) {
+    return {
+      available: false,
+      cliAvailable: false,
+      daemonRunning: false,
+      composeAvailable: false,
+      legacyComposeAvailable: false,
+      status: 'not-installed',
+      installUrl: getDockerInstallUrl(),
+      message: (cli.stderr || cli.stdout || 'Docker CLI is not installed or is not on PATH.').trim(),
+    };
+  }
+
+  const info = await captureOnce('docker', ['info', '--format', '{{.ServerVersion}}'], { timeoutMs: 10000 });
+  const compose = await captureOnce('docker', ['compose', 'version', '--short'], { timeoutMs: 10000 });
+  const legacyCompose = compose.code === 0
+    ? { code: 1, stdout: '', stderr: '' }
+    : await captureOnce('docker-compose', ['--version'], { timeoutMs: 10000 });
+  const daemonRunning = info.code === 0;
+  const composeAvailable = compose.code === 0;
+  const legacyComposeAvailable = legacyCompose.code === 0;
+  const available = daemonRunning && (composeAvailable || legacyComposeAvailable);
+
+  return {
+    available,
+    cliAvailable: true,
+    daemonRunning,
+    composeAvailable,
+    legacyComposeAvailable,
+    status: available ? 'ready' : daemonRunning ? 'compose-missing' : 'daemon-not-running',
+    installUrl: getDockerInstallUrl(),
+    version: (cli.stdout || '').trim(),
+    composeVersion: (compose.stdout || legacyCompose.stdout || '').trim(),
+    message: available
+      ? 'Docker is ready.'
+      : daemonRunning
+        ? 'Docker is installed, but Docker Compose is not available.'
+        : 'Docker is installed, but Docker Desktop/daemon is not running.',
+  };
+}
+
+async function resolveStorageRuntime() {
+  const requested = requestedStorageMode();
+  const docker = await detectDockerStatus();
+  activeDockerStatus = docker;
+
+  if (requested === 'local') {
+    return { storageMode: 'local', requestedStorageMode: requested, docker };
+  }
+
+  if (requested === 'docker') {
+    if (docker.available) {
+      return { storageMode: 'docker', requestedStorageMode: requested, docker };
+    }
+    log('Docker', `${docker.message}; falling back to local mode`);
+    return { storageMode: 'local', requestedStorageMode: requested, docker };
+  }
+
+  return {
+    storageMode: docker.available ? 'docker' : 'local',
+    requestedStorageMode: requested,
+    docker,
+  };
+}
+
+function buildServiceEnv(controlPort = getControlPort(), storageMode = 'local') {
   const ports = getDesktopPorts();
   const localApiKey = process.env.OPENCRAB_API_KEY || 'local-opencrab-key';
+  const resolvedStorageMode = normalizeStorageMode(storageMode) === 'docker' ? 'docker' : 'local';
   return {
     ...process.env,
     COMPOSE_PROJECT_NAME: process.env.OPENCRAB_DESKTOP_COMPOSE_PROJECT_NAME || 'opencrab_local',
-    STORAGE_MODE: 'docker',
+    STORAGE_MODE: resolvedStorageMode,
+    OPENCRAB_DESKTOP_STORAGE_MODE_RESOLVED: resolvedStorageMode,
+    OPENCRAB_DESKTOP_STORAGE_MODE_REQUESTED: requestedStorageMode(),
+    LOCAL_DATA_DIR: getLocalDataDir(),
     OPENCRAB_API_KEY: localApiKey,
     OPENCRAB_MCP_URL: process.env.OPENCRAB_MCP_URL || '',
     OPENCRAB_MCP_API_KEY: process.env.OPENCRAB_MCP_API_KEY || '',
@@ -632,14 +730,32 @@ function runOnce(command, args, options, name) {
 
 function captureOnce(command, args, options) {
   return new Promise((resolve) => {
+    const { timeoutMs = 30000, ...spawnOptions } = options || {};
     const proc = spawn(command, args, {
       shell: true,
       windowsHide: true,
-      ...options,
+      ...spawnOptions,
     });
 
     let stdout = '';
     let stderr = '';
+    let settled = false;
+
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve(result);
+    };
+
+    const timeout = setTimeout(() => {
+      try {
+        proc.kill();
+      } catch {
+        // Best effort only.
+      }
+      finish({ code: -2, stdout, stderr: stderr || `${command} timed out after ${Math.round(timeoutMs / 1000)}s` });
+    }, timeoutMs);
 
     proc.stdout.on('data', (data) => {
       stdout += data.toString();
@@ -650,11 +766,11 @@ function captureOnce(command, args, options) {
     });
 
     proc.on('error', (error) => {
-      resolve({ code: -1, stdout, stderr: stderr || error.message });
+      finish({ code: -1, stdout, stderr: stderr || error.message });
     });
 
     proc.on('close', (code) => {
-      resolve({ code, stdout, stderr });
+      finish({ code, stdout, stderr });
     });
   });
 }
@@ -823,9 +939,10 @@ async function readApiStatus() {
   }
 }
 
-async function isApiHealthy() {
+async function isApiHealthy(expectedStorageMode = '') {
   const status = await readApiStatus();
-  return Boolean(status.ok && areStoresHealthy(status.data));
+  const modeMatches = !expectedStorageMode || status.data?.storage_mode === expectedStorageMode;
+  return Boolean(status.ok && modeMatches && areStoresHealthy(status.data));
 }
 
 async function isWebHealthy() {
@@ -837,11 +954,11 @@ async function isWebHealthy() {
   }
 }
 
-async function waitForExistingFastApi(timeoutMs = 15000) {
+async function waitForExistingFastApi(expectedStorageMode = '', timeoutMs = 15000) {
   try {
     await waitForJson(
       `${API_URL}/api/status`,
-      (data) => data && data.ok === true && areStoresHealthy(data),
+      (data) => data && data.ok === true && (!expectedStorageMode || data.storage_mode === expectedStorageMode) && areStoresHealthy(data),
       'FastAPI',
       timeoutMs,
     );
@@ -885,37 +1002,55 @@ async function inspectContainer(name, env) {
 }
 
 async function getLocalServicesStatus(env = activeServiceEnv || buildServiceEnv()) {
+  const storageMode = env.STORAGE_MODE === 'docker' ? 'docker' : 'local';
   const containerNames = {
     neo4j: 'opencrab-neo4j',
     mongodb: 'opencrab-mongodb',
     postgres: 'opencrab-postgres',
     chromadb: 'opencrab-chromadb',
   };
-  const entries = await Promise.all(
-    Object.entries(containerNames).map(async ([service, container]) => [
-      service,
-      await inspectContainer(container, env),
-    ]),
-  );
+  const entries = storageMode === 'docker'
+    ? await Promise.all(
+        Object.entries(containerNames).map(async ([service, container]) => [
+          service,
+          await inspectContainer(container, env),
+        ]),
+      )
+    : [];
   const containers = Object.fromEntries(entries);
   const api = await readApiStatus();
-  const containersHealthy = Object.values(containers).every((item) => item.running && item.healthy);
-  const apiHealthy = Boolean(api.ok && areStoresHealthy(api.data));
+  const containersHealthy = storageMode === 'local'
+    ? true
+    : Object.values(containers).every((item) => item.running && item.healthy);
+  const apiHealthy = Boolean(api.ok && api.data?.storage_mode === storageMode && areStoresHealthy(api.data));
+  const dockerStatus = activeDockerStatus || await detectDockerStatus();
+  activeDockerStatus = dockerStatus;
 
   return {
     ok: containersHealthy && apiHealthy,
+    storageMode,
+    requestedStorageMode: env.OPENCRAB_DESKTOP_STORAGE_MODE_REQUESTED || requestedStorageMode(),
+    localDataDir: env.LOCAL_DATA_DIR || getLocalDataDir(),
+    docker: dockerStatus,
     api: {
       ok: apiHealthy,
       status: api.status,
+      storageMode: api.data?.storage_mode || '',
       stores: api.data?.stores || {},
       error: api.error || '',
     },
     containers,
-    neo4j: {
-      browserUrl: `http://localhost:${env.NEO4J_HTTP_HOST_PORT}`,
-      boltUrl: env.NEO4J_URI,
-      username: env.NEO4J_USER,
-    },
+    neo4j: storageMode === 'docker'
+      ? {
+          browserUrl: `http://localhost:${env.NEO4J_HTTP_HOST_PORT}`,
+          boltUrl: env.NEO4J_URI,
+          username: env.NEO4J_USER,
+        }
+      : {
+          browserUrl: '',
+          boltUrl: `local:${path.join(env.LOCAL_DATA_DIR || getLocalDataDir(), 'graph.db')}`,
+          username: 'local',
+        },
   };
 }
 
@@ -951,23 +1086,30 @@ async function startDockerServices(rootDir, env) {
 }
 
 async function startFastApi(rootDir, env) {
-  if (await isApiHealthy()) {
+  const expectedStorageMode = env.STORAGE_MODE === 'docker' ? 'docker' : 'local';
+  if (await isApiHealthy(expectedStorageMode)) {
     log('FastAPI', 'already healthy');
     return;
   }
 
   if (isManagedServiceRunning('fastapi')) {
-    log('FastAPI', 'process is already running; waiting for health');
-    await waitForJson(
-      `${API_URL}/api/status`,
-      (data) => data && data.ok === true && areStoresHealthy(data),
-      'FastAPI',
-      60000,
-    );
-    return;
+    const current = await readApiStatus();
+    if (current.ok && current.data?.storage_mode && current.data.storage_mode !== expectedStorageMode) {
+      log('FastAPI', `restarting to switch storage mode ${current.data.storage_mode} -> ${expectedStorageMode}`);
+      await stopManagedService('fastapi');
+    } else {
+      log('FastAPI', 'process is already running; waiting for health');
+      await waitForJson(
+        `${API_URL}/api/status`,
+        (data) => data && data.ok === true && data.storage_mode === expectedStorageMode && areStoresHealthy(data),
+        'FastAPI',
+        60000,
+      );
+      return;
+    }
   }
 
-  if (await waitForExistingFastApi()) {
+  if (await waitForExistingFastApi(expectedStorageMode)) {
     return;
   }
 
@@ -984,13 +1126,13 @@ async function startFastApi(rootDir, env) {
     {
       serviceKey: 'fastapi',
       restart: true,
-      shouldSkipRestart: isApiHealthy,
+      shouldSkipRestart: () => isApiHealthy(expectedStorageMode),
     },
   );
 
   await waitForJson(
     `${API_URL}/api/status`,
-    (data) => data && data.ok === true && areStoresHealthy(data),
+    (data) => data && data.ok === true && data.storage_mode === expectedStorageMode && areStoresHealthy(data),
     'FastAPI',
     180000,
   );
@@ -1009,8 +1151,17 @@ async function ensureLocalServices() {
       activeServiceEnv = buildServiceEnv();
     }
 
-    log('Local Services', 'ensuring Neo4j and data stores are running');
-    await startDockerServices(rootDir, activeServiceEnv);
+    const runtime = await resolveStorageRuntime();
+    activeServiceEnv = buildServiceEnv(activeControlPort || getControlPort(), runtime.storageMode);
+    activeServiceEnv.OPENCRAB_DESKTOP_STORAGE_MODE_REQUESTED = runtime.requestedStorageMode;
+    activeServiceEnv.OPENCRAB_DESKTOP_STORAGE_MODE_RESOLVED = runtime.storageMode;
+
+    if (runtime.storageMode === 'docker') {
+      log('Local Services', 'ensuring Docker data stores are running');
+      await startDockerServices(rootDir, activeServiceEnv);
+    } else {
+      log('Local Services', `using no-Docker local storage at ${activeServiceEnv.LOCAL_DATA_DIR}`);
+    }
     await startFastApi(rootDir, activeServiceEnv);
     const status = await getLocalServicesStatus(activeServiceEnv);
     if (!status.ok) {
@@ -1049,7 +1200,8 @@ async function restartLocalRuntime(options = {}) {
   if (!activeServiceEnv) {
     loadEnvFile(userEnvPath(app));
     loadEnvFile(path.join(rootDir, '.env.local'));
-    activeServiceEnv = buildServiceEnv();
+    const runtime = await resolveStorageRuntime();
+    activeServiceEnv = buildServiceEnv(activeControlPort || getControlPort(), runtime.storageMode);
   }
 
   const includeData = options.includeData !== false;
@@ -1064,12 +1216,18 @@ async function restartLocalRuntime(options = {}) {
   if (includeWeb) await stopManagedService('next');
 
   if (includeData) {
-    try {
-      await runOnce('docker', ['compose', 'restart', ...DATA_SERVICES], { cwd: rootDir, env: activeServiceEnv }, 'Docker Compose');
-    } catch (error) {
-      log('Docker Compose', `docker compose restart failed; falling back to up -d: ${error.message}`);
+    const runtime = await resolveStorageRuntime();
+    activeServiceEnv = buildServiceEnv(activeControlPort || getControlPort(), runtime.storageMode);
+    if (runtime.storageMode === 'docker') {
+      try {
+        await runOnce('docker', ['compose', 'restart', ...DATA_SERVICES], { cwd: rootDir, env: activeServiceEnv }, 'Docker Compose');
+      } catch (error) {
+        log('Docker Compose', `docker compose restart failed; falling back to up -d: ${error.message}`);
+      }
+      await startDockerServices(rootDir, activeServiceEnv);
+    } else {
+      log('Local Services', `data restart skipped; local mode stores data at ${activeServiceEnv.LOCAL_DATA_DIR}`);
     }
-    await startDockerServices(rootDir, activeServiceEnv);
   }
 
   if (includeApi) await startFastApi(rootDir, activeServiceEnv);
@@ -1089,7 +1247,8 @@ async function restartLocalRuntime(options = {}) {
 async function restartWebUi() {
   const rootDir = getRootDir();
   if (!activeServiceEnv) {
-    activeServiceEnv = buildServiceEnv();
+    const runtime = await resolveStorageRuntime();
+    activeServiceEnv = buildServiceEnv(activeControlPort || getControlPort(), runtime.storageMode);
   }
   if (app.isPackaged) {
     await stopPackagedWebServer();
@@ -1285,13 +1444,34 @@ async function bootstrapLocalRuntime(rootDir, serviceEnv) {
   }
 }
 
+async function openDockerInstall() {
+  const url = getDockerInstallUrl();
+  await shell.openExternal(url);
+  return { ok: true, url };
+}
+
+async function setStorageMode(mode) {
+  const normalized = normalizeStorageMode(mode);
+  updateEnvFile(userEnvPath(app), { OPENCRAB_DESKTOP_STORAGE_MODE: normalized });
+  process.env.OPENCRAB_DESKTOP_STORAGE_MODE = normalized;
+  log('Local Services', `storage mode set to ${normalized}`);
+  const status = await restartLocalRuntime({
+    includeData: true,
+    includeApi: true,
+    includeMcp: true,
+    includeWeb: false,
+  });
+  return { ok: true, mode: normalized, status };
+}
+
 async function startServices() {
   const rootDir = getRootDir();
   loadEnvFile(userEnvPath(app));
   loadEnvFile(path.join(rootDir, '.env.local'));
   await ensurePackagedRuntime(rootDir);
 
-  activeServiceEnv = buildServiceEnv();
+  const runtime = await resolveStorageRuntime();
+  activeServiceEnv = buildServiceEnv(getControlPort(), runtime.storageMode);
   const controlPort = await startControlServer({
     app,
     clipboard,
@@ -1306,6 +1486,8 @@ async function startServices() {
     restartWebUi,
     checkForUpdates: () => checkForUpdates(false),
     openReleasePage,
+    openDockerInstall,
+    setStorageMode,
   });
   activeControlPort = controlPort;
   activeServiceEnv.NEXT_PUBLIC_DESKTOP_CONTROL_URL = `http://127.0.0.1:${controlPort}`;

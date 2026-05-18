@@ -14,6 +14,7 @@ import {
   ingestDesktopSource,
   ingestGeneratedPack,
   installAgentAssets,
+  openDockerInstall,
   openGeneratedPack,
   openDesktopRelease,
   query,
@@ -24,6 +25,7 @@ import {
   saveDesktopMcpUrlFromClipboard,
   savePackSettings,
   selectPackOutputDir,
+  setDesktopStorageMode,
   startDesktopOAuth,
   startLocalServices,
   testDesktopMcpConnection,
@@ -486,6 +488,32 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
     }
   }
 
+  async function handleOpenDockerInstall() {
+    setOpsBusy(true)
+    try {
+      await openDockerInstall()
+      showToast('Docker install page opened')
+    } catch (error) {
+      showToast(String(error), 'error')
+    } finally {
+      setOpsBusy(false)
+    }
+  }
+
+  async function handleSetStorageMode(mode: 'auto' | 'local' | 'docker') {
+    setOpsBusy(true)
+    try {
+      const status = await setDesktopStorageMode(mode)
+      setServiceStatus(status)
+      showToast(`Storage mode: ${status.storageMode ?? mode}`)
+      onRefresh()
+    } catch (error) {
+      showToast(String(error), 'error')
+    } finally {
+      setOpsBusy(false)
+    }
+  }
+
   async function handleSelectPackOutputDir() {
     setPackBusy(true)
     try {
@@ -590,6 +618,14 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
     : desktopStatus?.mcpIngestAvailable
       ? `ingest ready (${desktopStatus.mcpToolsCount ?? 0} tools)`
       : `connected, ingest tool missing (${desktopStatus.mcpToolsCount ?? 0} tools)`
+  const storageMode = serviceStatus?.storageMode ?? 'local'
+  const usingLocalStorage = storageMode === 'local'
+  const localStackLabel = usingLocalStorage ? 'Local storage' : 'Docker stack'
+  const graphLabel = usingLocalStorage ? 'Local graph' : 'Neo4j'
+  const graphLocation = usingLocalStorage
+    ? serviceStatus?.localDataDir ?? 'local data directory'
+    : serviceStatus?.neo4j?.boltUrl ?? 'bolt://localhost:7688'
+  const dockerMessage = serviceStatus?.docker?.message || ''
 
   return (
     <div
@@ -729,7 +765,7 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
             >
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
                 <span style={{ color: serviceStatus?.ok ? '#8ec07c' : '#fb4934' }}>
-                  Neo4j {serviceStatus?.ok ? 'ready' : 'not ready'}
+                  {graphLabel} {serviceStatus?.ok ? 'ready' : 'not ready'}
                 </span>
                 <button
                   className="btn-gold"
@@ -741,8 +777,13 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
                 </button>
               </div>
               <div className="mono" style={{ marginTop: 6, color: '#7c6f64', wordBreak: 'break-all' }}>
-                {serviceStatus?.neo4j?.boltUrl ?? 'bolt://localhost:7688'}
+                {graphLocation}
               </div>
+              {usingLocalStorage && (
+                <div style={{ marginTop: 5, color: '#8ec07c', lineHeight: 1.4 }}>
+                  Docker is optional in local mode. Use Docker mode only when you need Neo4j Browser and the full external database stack.
+                </div>
+              )}
             </div>
             <div style={{ marginBottom: 8 }}>
               <label style={{ fontSize: 11, color: '#7c6f64', display: 'block', marginBottom: 4 }}>Ingest target</label>
@@ -1251,15 +1292,20 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
             >
               <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 6 }}>
                 <span style={{ color: serviceStatus?.ok ? '#8ec07c' : '#fb4934' }}>
-                  Local stack {serviceStatus?.ok ? 'healthy' : 'needs attention'}
+                  {localStackLabel} {serviceStatus?.ok ? 'healthy' : 'needs attention'}
                 </span>
                 <button className="btn-gold" style={{ fontSize: 10, padding: '3px 7px' }} onClick={refreshLocalServices} disabled={opsBusy}>
                   Refresh
                 </button>
               </div>
               <div className="mono" style={{ color: '#7c6f64', wordBreak: 'break-all', marginBottom: 4 }}>
-                API {serviceStatus?.api?.status ?? 'n/a'} / {serviceStatus?.neo4j?.boltUrl ?? 'bolt://localhost:7688'}
+                API {serviceStatus?.api?.status ?? 'n/a'} / {storageMode} / {graphLocation}
               </div>
+              {dockerMessage && (
+                <div style={{ color: serviceStatus?.docker?.available ? '#8ec07c' : '#fabd2f', lineHeight: 1.4, marginBottom: 4 }}>
+                  Docker: {dockerMessage}
+                </div>
+              )}
               {serviceStatus?.containers &&
                 Object.entries(serviceStatus.containers).map(([name, container]) => (
                   <div key={name} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginTop: 4 }}>
@@ -1275,7 +1321,21 @@ export default function RightPanel({ selectedNode, controls, onControlChange, ap
               {startingServices ? 'Starting...' : 'Start Services'}
             </button>
             <button className="btn-gold" style={{ width: '100%', marginBottom: 8 }} onClick={handleRestartServices} disabled={opsBusy}>
-              {opsBusy ? 'Working...' : 'Restart Graph Services'}
+              {opsBusy ? 'Working...' : `Restart ${usingLocalStorage ? 'Local Services' : 'Graph Services'}`}
+            </button>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 6, marginBottom: 8 }}>
+              <button className="btn-gold" style={{ fontSize: 10, padding: '5px 6px' }} onClick={() => handleSetStorageMode('auto')} disabled={opsBusy}>
+                Auto
+              </button>
+              <button className="btn-gold" style={{ fontSize: 10, padding: '5px 6px' }} onClick={() => handleSetStorageMode('local')} disabled={opsBusy}>
+                Local
+              </button>
+              <button className="btn-gold" style={{ fontSize: 10, padding: '5px 6px' }} onClick={() => handleSetStorageMode('docker')} disabled={opsBusy}>
+                Docker
+              </button>
+            </div>
+            <button className="btn-gold" style={{ width: '100%', marginBottom: 8 }} onClick={handleOpenDockerInstall} disabled={opsBusy}>
+              Install / Open Docker Guide
             </button>
             <button className="btn-gold" style={{ width: '100%', marginBottom: 14 }} onClick={handleRestartWebUi} disabled={opsBusy}>
               Restart Web UI

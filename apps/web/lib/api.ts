@@ -70,6 +70,8 @@ export interface DesktopStatus {
   apiUrl?: string
   localMcpUrl?: string
   localApiKey?: string
+  storageMode?: string
+  localDataDir?: string
 }
 
 export interface AgentAssetResult {
@@ -140,9 +142,25 @@ export interface GeneratedPack {
 
 export interface LocalServicesStatus {
   ok: boolean
+  storageMode?: 'local' | 'docker' | string
+  requestedStorageMode?: 'auto' | 'local' | 'docker' | string
+  localDataDir?: string
+  docker?: {
+    available: boolean
+    cliAvailable?: boolean
+    daemonRunning?: boolean
+    composeAvailable?: boolean
+    legacyComposeAvailable?: boolean
+    status?: string
+    installUrl?: string
+    version?: string
+    composeVersion?: string
+    message?: string
+  }
   api?: {
     ok: boolean
     status: number
+    storageMode?: string
     stores?: Record<string, unknown>
     error?: string
   }
@@ -312,7 +330,7 @@ export async function startLocalServices(): Promise<LocalServicesStatus> {
   })
   const data = await r.json().catch(() => ({}))
   if (!r.ok || data.ok === false || data.status?.ok === false) {
-    throw new Error(data.error || 'Failed to start local Neo4j services')
+    throw new Error(data.error || 'Failed to start local OpenCrab services')
   }
   return data.status
 }
@@ -330,7 +348,7 @@ export async function restartLocalServices(input: {
   })
   const data = await r.json().catch(() => ({}))
   if (!r.ok || data.ok === false || data.status?.ok === false) {
-    throw new Error(data.error || 'Failed to restart local services')
+    throw new Error(data.error || data.status?.docker?.message || 'Failed to restart local services')
   }
   return data.status
 }
@@ -344,6 +362,32 @@ export async function restartWebUi(): Promise<{ ok: boolean; url: string }> {
   const data = await r.json().catch(() => ({}))
   if (!r.ok || data.ok === false) {
     throw new Error(data.error || 'Failed to restart web UI')
+  }
+  return data.status
+}
+
+export async function openDockerInstall(): Promise<{ ok: boolean; url?: string }> {
+  const r = await fetch(`${desktopBase()}/desktop/docker/install`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  })
+  const data = await r.json().catch(() => ({}))
+  if (!r.ok || data.ok === false) {
+    throw new Error(data.error || 'Failed to open Docker install page')
+  }
+  return data
+}
+
+export async function setDesktopStorageMode(mode: 'auto' | 'local' | 'docker'): Promise<LocalServicesStatus> {
+  const r = await fetch(`${desktopBase()}/desktop/storage/mode`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mode }),
+  })
+  const data = await r.json().catch(() => ({}))
+  if (!r.ok || data.ok === false || data.status?.ok === false) {
+    throw new Error(data.error || data.status?.docker?.message || 'Failed to switch storage mode')
   }
   return data.status
 }

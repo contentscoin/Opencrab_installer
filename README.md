@@ -359,6 +359,13 @@ apps\desktop\dist\win-unpacked\OpenCrab.exe
 - Collapses repeated Windows `CreateProcessWithLogonW failed: 1326` shell errors into a single readable progress message.
 - Expands keyword research variants for Korean pack prompts such as `골프공 브랜드팩` and fixes Windows UTF-8 output for the research helper.
 
+### v1.0.21
+
+- Adds automatic no-Docker local storage fallback. If Docker Desktop or Docker Compose is missing, OpenCrab now starts with SQLite-backed graph/docs, local Chroma, and SQLite SQL storage instead of blocking startup.
+- Keeps Docker mode available for the full Neo4j/MongoDB/PostgreSQL/Chroma stack when Docker is installed and running.
+- Adds Ops controls to switch storage mode between Auto, Local, and Docker, plus a Docker install guide button.
+- Updates service status and Codex task context so local mode is shown as local graph storage rather than a broken Neo4j dependency.
+
 ## Attribution
 
 OpenCrab itself comes from [AlexAI-MCP/OpenCrab](https://github.com/AlexAI-MCP/OpenCrab). This fork focuses on installer, desktop runtime orchestration, OpenCrab MCP bridge assets, and public release packaging.
