@@ -352,6 +352,13 @@ apps\desktop\dist\win-unpacked\OpenCrab.exe
 - Stores a clean pack display name separately from the unique ZIP filename.
 - Uses the pack display name as the ingest title and records it in pack metadata.
 
+### v1.0.20
+
+- Prepares a desktop-side keyword research seed before launching Codex so pack tasks are not blocked by Codex CLI shell execution on Windows.
+- Enables Codex native web search for research tasks and instructs Codex to use prepared seed files instead of retrying failed shell setup commands.
+- Collapses repeated Windows `CreateProcessWithLogonW failed: 1326` shell errors into a single readable progress message.
+- Expands keyword research variants for Korean pack prompts such as `골프공 브랜드팩` and fixes Windows UTF-8 output for the research helper.
+
 ## Attribution
 
 OpenCrab itself comes from [AlexAI-MCP/OpenCrab](https://github.com/AlexAI-MCP/OpenCrab). This fork focuses on installer, desktop runtime orchestration, OpenCrab MCP bridge assets, and public release packaging.

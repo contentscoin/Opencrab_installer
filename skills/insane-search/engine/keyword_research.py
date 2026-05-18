@@ -17,8 +17,23 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 USER_AGENT = "OpenCrabDesktop/1.0 keyword-research"
+PACK_HINT_WORDS = (
+    "브랜드팩",
+    "온톨로지팩",
+    "데이터팩",
+    "리서치팩",
+    "팩",
+    "패키지",
+    "pack",
+    "ontology",
+    "marketplace",
+)
 
 
 def _fetch_json(url: str, timeout: int = 15) -> Any:
@@ -141,18 +156,77 @@ def dedupe_sources(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return output
 
 
+def split_source_errors(sources: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    usable = []
+    errors = []
+    for source in sources:
+        if str(source.get("source_type") or "").endswith("_error"):
+            errors.append(source)
+        else:
+            usable.append(source)
+    return usable, errors
+
+
+def query_variants(query: str) -> list[str]:
+    original = " ".join(str(query or "").split())
+    variants = [original] if original else []
+
+    cleaned = original
+    for word in PACK_HINT_WORDS:
+        cleaned = cleaned.replace(word, " ")
+    cleaned = " ".join(cleaned.split()).strip(" -_/")
+    if cleaned and cleaned != original:
+        variants.append(cleaned)
+
+    lower = original.lower()
+    if "골프공" in original or "골프 공" in original or "golf ball" in lower:
+        variants.extend([
+            "golf ball",
+            "golf ball brands",
+            "golf ball manufacturers",
+            "golf ball specifications",
+            "golf ball market trends",
+        ])
+    elif "브랜드" in original or "brand" in lower:
+        base = cleaned or original
+        if base:
+            variants.extend([f"{base} brands", f"{base} manufacturers"])
+
+    output = []
+    seen: set[str] = set()
+    for variant in variants:
+        key = variant.strip().lower()
+        if key and key not in seen:
+            seen.add(key)
+            output.append(variant.strip())
+    return output[:8]
+
+
+def tag_query_variant(sources: list[dict[str, Any]], variant: str) -> list[dict[str, Any]]:
+    for source in sources:
+        metadata = source.setdefault("metadata", {})
+        if isinstance(metadata, dict):
+            metadata["query_variant"] = variant
+    return sources
+
+
 def research(query: str, limit: int = 5) -> dict[str, Any]:
     sources: list[dict[str, Any]] = []
-    for language in ("ko", "en"):
-        sources.extend(wikipedia_opensearch(query, language, limit))
-        sources.extend(wikidata_search(query, language, limit))
-    sources.extend(openalex_search(query, limit))
+    variants = query_variants(query)
+    for variant in variants:
+        for language in ("ko", "en"):
+            sources.extend(tag_query_variant(wikipedia_opensearch(variant, language, limit), variant))
+            sources.extend(tag_query_variant(wikidata_search(variant, language, limit), variant))
+        sources.extend(tag_query_variant(openalex_search(variant, limit), variant))
+    usable_sources, source_errors = split_source_errors(dedupe_sources(sources))
 
     return {
         "query": query,
+        "query_variants": variants,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "strategy": "keyword-first public APIs",
-        "sources": dedupe_sources(sources),
+        "sources": usable_sources,
+        "errors": source_errors,
         "notes": [
             "Use these public-source results as starting evidence.",
             "Run the blocked-URL engine only on concrete source URLs that still need direct page extraction.",

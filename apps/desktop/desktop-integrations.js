@@ -914,10 +914,6 @@ function extractHttpUrls(text) {
   return String(text || '').match(/https?:\/\/[^\s"'<>)]*/gi) || [];
 }
 
-function quoteForTask(value) {
-  return JSON.stringify(String(value || ''));
-}
-
 function buildCodexProcessEnv(extraInput = '', overrides = {}) {
   const parsed = parseEnvironmentVariables(extraInput);
   const basePath = parsed.PATH || overrides.PATH || process.env.PATH || '';
@@ -1064,6 +1060,11 @@ function formatProgressLine(line) {
   const cleaned = String(line || '').replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, '').trim();
   if (!cleaned) return '';
   if (/^user$/i.test(cleaned) || /^codex$/i.test(cleaned)) return '';
+  if (/python3?\s+-m\s+engine\s+"?<URL>"?/i.test(cleaned)) return '';
+  if (/(pip install|npm i -g)\s+.*(curl_cffi|playwright|puppeteer-extra)/i.test(cleaned)) return '';
+  if (/CreateProcessWithLogonW failed:\s*1326/i.test(cleaned)) {
+    return 'Codex shell execution failed in Windows sandbox (1326); continuing with web search and prepared research data.';
+  }
   if (/^tokens used\b/i.test(cleaned)) return cleaned;
   if (/^OpenAI Codex\b/i.test(cleaned)) return cleaned;
   if (/^workdir:/i.test(cleaned)) return cleaned;
@@ -1537,6 +1538,91 @@ function getResearchContext(rootDir, env, enabled = true) {
   };
 }
 
+function readJsonSourceCount(filePath) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    if (!Array.isArray(parsed.sources)) return 0;
+    return parsed.sources.filter((source) => !String(source?.source_type || '').endsWith('_error')).length;
+  } catch {
+    return 0;
+  }
+}
+
+function runKeywordResearchSeed({ cwd, query, research, env, sourceTarget }) {
+  if (!research?.available || !String(query || '').trim()) {
+    return null;
+  }
+
+  const outputDir = path.join(cwd, 'opencrab_data', 'research');
+  const outputPath = path.join(outputDir, 'desktop-keyword-research.json');
+  const statusPath = path.join(outputDir, 'desktop-keyword-research-status.json');
+  fs.mkdirSync(outputDir, { recursive: true });
+
+  const perProviderLimit = Math.max(5, Math.min(20, Math.ceil(Number(sourceTarget || 25) / 5)));
+  const args = [
+    '-m',
+    'engine.keyword_research',
+    String(query || ''),
+    '--limit',
+    String(perProviderLimit),
+    '--output',
+    outputPath,
+    '--json',
+  ];
+
+  try {
+    const result = spawnSync(research.python || 'python', args, {
+      cwd: research.skillDir || cwd,
+      env,
+      encoding: 'utf8',
+      timeout: 120000,
+      windowsHide: true,
+    });
+
+    const stdout = String(result.stdout || '').trim();
+    const stderr = String(result.stderr || '').trim();
+    if (result.status === 0) {
+      if (!fs.existsSync(outputPath) && stdout.startsWith('{')) {
+        fs.writeFileSync(outputPath, stdout, 'utf8');
+      }
+      return {
+        ok: fs.existsSync(outputPath),
+        path: fs.existsSync(outputPath) ? outputPath : statusPath,
+        sources: fs.existsSync(outputPath) ? readJsonSourceCount(outputPath) : 0,
+        message: fs.existsSync(outputPath) ? 'Keyword research seed ready.' : 'Keyword research helper finished without writing output.',
+      };
+    }
+
+    const message = redactSensitiveText(result.error?.message || stderr || stdout || `keyword research exited with code ${result.status}`);
+    fs.writeFileSync(statusPath, JSON.stringify({
+      ok: false,
+      generatedAt: new Date().toISOString(),
+      query,
+      error: message.slice(0, 2000),
+    }, null, 2), 'utf8');
+    return {
+      ok: false,
+      path: statusPath,
+      sources: 0,
+      message,
+    };
+  } catch (error) {
+    const message = redactSensitiveText(error?.message || String(error));
+    fs.writeFileSync(statusPath, JSON.stringify({
+      ok: false,
+      generatedAt: new Date().toISOString(),
+      query,
+      error: message.slice(0, 2000),
+    }, null, 2), 'utf8');
+    return {
+      ok: false,
+      path: statusPath,
+      sources: 0,
+      message,
+    };
+  }
+}
+
 function getVisionContext(rootDir, env, enabled = true) {
   const skillDir = path.join(rootDir, 'skills', VISION_SKILL_NAME);
   const engineDir = path.join(skillDir, 'engine');
@@ -1637,8 +1723,16 @@ function buildCodexTaskContent({
   const visionDir = path.join(cwd, 'opencrab_data', 'vision');
   const taskUrls = extractHttpUrls(task);
   const keywordResearch = taskUrls.length === 0;
-  const keywordResearchCommand = `${research?.python || 'python'} -m engine.keyword_research ${quoteForTask(task)} --output ${quoteForTask(path.join(researchDir, 'keyword-research.json'))} --json`;
-  const urlResearchCommand = `${research?.python || 'python'} -m engine "<REAL_URL>" --json --trace`;
+  const researchSeed = research?.seed || null;
+  const researchSeedBlock = researchSeed?.ok ? `
+- Desktop-prepared keyword seed: ${researchSeed.path}
+- Desktop seed source count: ${researchSeed.sources || 0}
+- Read the seed file first and use it as source-discovery starting material before broadening with native Codex web search.
+` : researchSeed ? `
+- Desktop keyword seed status: ${researchSeed.path}
+- Seed preparation did not complete cleanly: ${researchSeed.message || 'unknown error'}
+- Continue with native Codex web search and public-source discovery instead of retrying the local helper.
+` : '';
   const packBlock = pack?.enabled ? `
 ## Pack Output
 
@@ -1663,15 +1757,13 @@ function buildCodexTaskContent({
 - Research engine path: ${research.engineDir}
 - Python command: ${research.python}
 - Research mode for this request: ${keywordResearch ? 'keyword-first, because the user did not provide a URL' : `URL-aware, because ${taskUrls.length} URL(s) were provided`}
-- Research runtime dependencies are bundled into packaged releases. If running from a development checkout and the engine reports missing packages, install them with:
-  - ${research.python} -m pip install curl_cffi beautifulsoup4 pyyaml feedparser yt-dlp
-- For keyword-only ontology pack requests, first run the keyword research helper from the research skill directory:
-  - ${keywordResearchCommand}
-- For direct URL fetches, run the URL engine only with a real URL from the user request or from keyword research results:
-  - ${urlResearchCommand}
+- Research runtime dependencies are bundled into packaged releases. Do not run setup/install commands from inside Codex Desktop tasks.
+${researchSeedBlock}
+- For keyword-only ontology pack requests, prefer the desktop-prepared seed and native Codex web search. Do not run shell commands just to start source discovery.
+- For direct URL fetches, use the URL engine only with a concrete real URL when shell execution is available. Stop after one shell/sandbox failure and continue with public-source results.
 - Never run the URL engine with placeholders such as "<URL>", "<REAL_URL>", or an empty string.
 - Use the URL engine for blocked concrete pages. Do not use it as a general search engine.
-- If Playwright/browser fallback is unavailable, keep the public-source results, note the blocked source, and continue producing the pack instead of repeatedly retrying the blocked page.
+- If Playwright/browser fallback or local shell execution is unavailable, keep the public-source results, note the blocked source, and continue producing the pack instead of repeatedly retrying the blocked page.
 - Store useful research outputs under ${researchDir}.
 - Convert research into ontology-pack artifacts with explicit source URLs, evidence snippets, claims, entities, relationships, and confidence notes.
 - Do not bypass login-only, private, or paywalled content. Use public pages, public APIs, RSS, metadata, Jina Reader, archive/cache routes, or browser/API discovery only when appropriate.
@@ -1736,6 +1828,7 @@ ${visionBlock}
 - You are Codex running from OpenCrab Desktop, modeled after the Codexian CLI workflow.
 - Use the local OpenCrab services and Neo4j connection when the task involves graph, ontology, or ingest work.
 - Work in visible phases and print a short status line before each phase: PLAN, SOURCE DISCOVERY, SOURCE CHECK, PACK WRITING, VERIFY. The desktop app shows these lines in the chat log.
+- During long source discovery, print STATUS lines after each meaningful group of sources, with current counts and what you are doing next.
 - For research-heavy pack work, aim for the configured source target, evidence target, social/community target, and search round count before declaring the pack complete. If the target cannot be reached, write a gap report with the reason and the attempted queries/sources.
 - When the task asks for ontology pack creation, market/domain research, source discovery, blocked URL reading, Korean web sources, social platforms, media metadata, GitHub/arXiv/StackOverflow, or public evidence gathering, use the Research Collection instructions above.
 - When the task asks for image data analysis, product/package imagery, visual taxonomy, screenshots, or image-based ontology packs, use the Image Package Analysis instructions above.
@@ -1743,6 +1836,7 @@ ${visionBlock}
 - If creating loose ingest files rather than a pack, put them under the default ingest output directory unless the user explicitly names another path.
 - Prefer structured files such as Markdown, JSONL, CSV, or Cypher with clear source metadata.
 - Use the OpenCrab MCP endpoint through the configured environment variables when useful.
+- If a shell command fails with Windows sandbox error 1326, do not retry that command family. Continue using native web search, prepared seed files, and direct file writing.
 - Do not print raw MCP URLs, API tokens, or secrets in your final answer.
 - Keep changes scoped to the user's request.
 `;
@@ -1962,6 +2056,23 @@ async function runCodexTaskInBackground({ app, rootDir, log, ensureLocalServices
     env.OPENCRAB_RESEARCH_MODE = promptUrls.length ? 'url' : 'keyword';
     env.OPENCRAB_RESEARCH_QUERY = requestText;
     const research = getResearchContext(rootDir, env, body.useResearchSkill !== false);
+    if (research.available && promptUrls.length === 0 && requestText) {
+      appendCodexProgress(task, 'system', 'Preparing desktop keyword research seed...');
+      research.seed = runKeywordResearchSeed({
+        cwd,
+        query: requestText,
+        research,
+        env,
+        sourceTarget: ingestResearch.sourceCount,
+      });
+      appendCodexProgress(
+        task,
+        'system',
+        research.seed?.ok
+          ? `Desktop keyword research seed ready: ${research.seed.sources} sources at ${research.seed.path}`
+          : `Desktop keyword research seed unavailable: ${research.seed?.message || 'unknown error'}. Codex will continue with native web search.`,
+      );
+    }
     const vision = getVisionContext(rootDir, env, body.useVisionSkill !== false);
     appendCodexProgress(
       task,
@@ -2030,6 +2141,11 @@ async function runCodexTaskInBackground({ app, rootDir, log, ensureLocalServices
       '--config',
       `model_reasoning_effort="${reasoning}"`,
     ];
+
+    if (body.useResearchSkill !== false) {
+      args.splice(1, 0, '--search');
+      appendCodexProgress(task, 'system', 'Codex native web search enabled.');
+    }
 
     const effectivePermission = process.platform === 'win32' && permission !== 'yolo'
       ? 'yolo'
